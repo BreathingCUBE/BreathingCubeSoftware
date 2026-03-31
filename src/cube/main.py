@@ -72,7 +72,6 @@ class CubeController:
         self.stopWatchPresetTime = 20*60   # 20 minutes in seconds
         self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
         self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config
-        self.bearerToken = "supersecretbearertoken"  
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
@@ -164,7 +163,7 @@ class CubeController:
             
         try:
             print("network_inst", self.network_inst)
-            state = self.network_inst.get_state()
+            state = self.network_inst.send_command({"action": "reset"})
             print(state)
             self.upload_configSettings(state)
             server_ok = True
@@ -193,8 +192,8 @@ class CubeController:
             # }
             json_payload = {
                 "task": self.task,
-                "action": "STOP",
-                "time_elapsed": self.timer.session_elapsed_ms /1000 # convert ms to seconds
+                "action": "stop",
+                "elapsed_seconds": int(self.timer.session_elapsed_ms / 1000) # convert ms to seconds
             }
             self.lp.stop_cmd()
             self.timer.pause()
@@ -206,7 +205,7 @@ class CubeController:
             # }
             json_payload = {
                 "task": self.task,
-                "action": "START",
+                "action": "start",
             }
             self.timer.set_time(self.stopWatchPresetTime)
             self.timer.start()
@@ -218,18 +217,18 @@ class CubeController:
             self.lp.start_cmd()
         # Send REST command at end so it does not stop animation. 
 
-        print(json_payload)
+        print("RX: ", json_payload)
         success = self.network_inst.send_command(json_payload)
         if success is not None:
 
             print("RECEIVED", success)
             self.network_inst.connected = True
 
-            # config = success.get("config")
-            # print("Received config:", config)
-            # if config:
-            #     print("Applying config:", config)
-            #     self.upload_configSettings(config)
+            config = success.get("config")
+            print("Received config:", config)
+            if config:
+                print("Applying config:", config)
+                self.upload_configSettings(config)
         else: 
             print(str(self.mode) + " Command failed to send, entering disconnection mode")
             self.network_inst.connected = False
@@ -239,9 +238,6 @@ class CubeController:
         # if self.mode == MODE_RUNNING:# then STOP
 
         # elif self.mode == MODE_STOP: # then START
-
-
-
 
     def handle_double_tap(self):
         # Send REST command
@@ -256,7 +252,7 @@ class CubeController:
         # }
         json_payload = {
             "task": self.task,
-            "action": "RESET",
+            "action": "reset",
         }
         success = self.network_inst.send_command(json_payload)
         if success is not None:
