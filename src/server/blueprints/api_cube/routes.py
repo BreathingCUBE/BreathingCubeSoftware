@@ -30,6 +30,7 @@ def task_control(cube_uuid: str):
 
     # Extract data from JSON
     data = request.get_json()
+    print("SERVER RECEIVED: ", data)
     if not data:
         return jsonify({"error": "Invalid JSON"}), 400
 
@@ -75,5 +76,12 @@ def task_control(cube_uuid: str):
         timer.reset(task_time)
         return jsonify({"message": f"{current_task} task reset",
                         "task_name": current_task,
-                        "task_time": task_time
+                        "task_time": task_time,
+                        "config": {
+                            "task_name": "Meditation",
+                            "task_time":10,
+                            "task_color": "#0000FF",
+                            "timing_pattern": [8, 8, 8, 8],
+                            "alarm_type": "bell"
+                        }
                         }), 200

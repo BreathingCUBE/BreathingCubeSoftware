@@ -102,8 +102,6 @@ class PiezoButton:
                     print("Single Tap Detected! " + str(self.doubleTap))
                     result = 1  # SINGLE TAP
             self.doubleTap = 0  # reset tap count if too much time has passed
-            
-
 
         time.sleep_ms(self.dt_ms)
         return result

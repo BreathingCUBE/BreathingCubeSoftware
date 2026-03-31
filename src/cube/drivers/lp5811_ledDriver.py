@@ -515,7 +515,6 @@ class LP5811:
 
     def success_animation(self):
         self.init_auto()
-        print("Success mode: flashing green")
         self.led_all_breathing(RGBW=[0, 255, 0, 0], duration_ms=[0x02, 0x03, 0x04, 0x05], repeat_times=0x00)  # Green breathing, fast, play once
         time.sleep_ms(5) # 5ms delay to ensure settings are applied before starting
         self.start_cmd()

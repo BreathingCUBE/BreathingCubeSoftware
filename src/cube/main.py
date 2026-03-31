@@ -162,11 +162,20 @@ class CubeController:
             print("Failed to connect to WiFi:", e)
             
         try:
-            print("network_inst", self.network_inst)
-            state = self.network_inst.send_command({"action": "reset"})
-            print(state)
-            self.upload_configSettings(state)
-            server_ok = True
+            json_payload = {
+                "task": self.task,
+                "action": "reset",
+            }
+            success = self.network_inst.send_command(json_payload)
+            if success is not None:
+                print("RECEIVED", success)
+
+                config = success.get("config")
+
+                if config:
+                    print("Applying config:", config)
+                    self.upload_configSettings(config)
+                server_ok = True
         except Exception as e:
             print("Failed to fetch server state:", e)
 
@@ -175,9 +184,11 @@ class CubeController:
         if wifi_ok and server_ok:
             self.connected = True   
             self.controller_success_animation()
+            return True
         else:
             self.connected = False
             self.controller_error_animation()
+            return False
 
     # ---------- Upon single tap, will toggle mode and send respective commands to server----------
     def handle_single_tap(self):
@@ -195,8 +206,7 @@ class CubeController:
                 "action": "stop",
                 "elapsed_seconds": int(self.timer.session_elapsed_ms / 1000) # convert ms to seconds
             }
-            self.lp.stop_cmd()
-            self.timer.pause()
+
         elif self.mode == MODE_STOP: # then START
             # JSON payload upon starting
             # Cube:{
@@ -207,6 +217,29 @@ class CubeController:
                 "task": self.task,
                 "action": "start",
             }
+
+        # Send REST command at end so it does not stop animation. 
+
+        print("RX: ", json_payload)
+        if(self.network_inst.connected == False):   
+            success = None
+        else:
+            success = self.network_inst.send_command(json_payload)
+        if success is not None:
+
+            print("RECEIVED", success)
+            self.network_inst.connected = True
+        else: 
+            print(str(self.mode) + " Command failed to send, entering disconnection mode")
+            self.network_inst.connected = False
+            self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
+            self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config 
+
+
+        if self.mode == MODE_RUNNING:# then STOP
+            self.lp.stop_cmd()
+            self.timer.pause()
+        elif self.mode == MODE_STOP: # then START
             self.timer.set_time(self.stopWatchPresetTime)
             self.timer.start()
             self.lp.init_auto()
@@ -215,29 +248,6 @@ class CubeController:
                 duration_ms=self.animation_pattern
             )
             self.lp.start_cmd()
-        # Send REST command at end so it does not stop animation. 
-
-        print("RX: ", json_payload)
-        success = self.network_inst.send_command(json_payload)
-        if success is not None:
-
-            print("RECEIVED", success)
-            self.network_inst.connected = True
-
-            config = success.get("config")
-            print("Received config:", config)
-            if config:
-                print("Applying config:", config)
-                self.upload_configSettings(config)
-        else: 
-            print(str(self.mode) + " Command failed to send, entering disconnection mode")
-            self.network_inst.connected = False
-            self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
-            self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config 
-
-        # if self.mode == MODE_RUNNING:# then STOP
-
-        # elif self.mode == MODE_STOP: # then START
 
     def handle_double_tap(self):
         # Send REST command
@@ -254,28 +264,16 @@ class CubeController:
             "task": self.task,
             "action": "reset",
         }
-        success = self.network_inst.send_command(json_payload)
-        if success is not None:
-            print("RECEIVED", success)
-
-            config = success.get("config")
-
-            if config:
-                print("Applying config:", config)
-                self.upload_configSettings(config)
-
-
+        # success = self.network_inst.send_command(json_payload)
+        # success = None
+        if self.init_network() == True:
+            print("Network is connected ")
         else:
             print(str(self.mode) + " Command failed to send, entering disconnection mode")
-            self.network_inst.connected = False
+            # self.network_inst.connected = False
             self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
             self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config 
 
-        self.init_network()
-
-        # if self.network_inst.connected == False:
-        #     print("Retrying to connect to server")
-        #     self.init_network()
 
     def toggle_mode(self):
         if self.mode == MODE_STOP:
@@ -298,10 +296,12 @@ class CubeController:
             press = self.piezo.buttonPress()
             if press == 1:
                 self.handle_single_tap()
+                press = 0
             elif press == 2:
                 self.handle_double_tap()
+                press = 0
 
-            # time.sleep_ms(5)
+            time.sleep_ms(5)
 
 def main():
     controller = CubeController()

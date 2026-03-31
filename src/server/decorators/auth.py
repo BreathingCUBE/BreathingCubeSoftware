@@ -61,6 +61,8 @@ def require_api_key(f):
 
         # Compare keys
         if provided_key != expected_key:
+            print("Provided key:", provided_key)
+            print("Expected key:", expected_key)
             return jsonify({"error": "Unauthorized"}), 401
 
         # Allow the route to execute normally
