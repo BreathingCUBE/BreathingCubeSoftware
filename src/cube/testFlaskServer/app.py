@@ -11,7 +11,7 @@ def get_config():
     config = {
         "task_name": "Meditation",
         "task_time":10,
-        "task_color": "#0004D4",
+        "task_color": "#0004D400",
         "timing_pattern": [4, 4, 4, 4],
         "alarm_type": "bell"
     }

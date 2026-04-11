@@ -114,21 +114,24 @@ class NetworkingNode:
     # '''
 
 
-    def send_command(self, command, elapsed_seconds=-1, presetTime=-1, task="Meditation"):
+    def send_command(self, command, presetTime=0, task="Meditation"):
         self.ensure_connection()
 
         url = f"http://{self.server_ip}:{self.port}/api/task/control"
 
         payload = {
             "device_id": "cube_01",
-            "task": task,
+            "task": command.get("task", task),
             "action": command.get("action"),   # "START", "STOP", "RESET"
             "timestamp": time.time(),
-            "elapsed_seconds": elapsed_seconds,
             "presetTime": presetTime   # fixed key (no space)
         }
 
+        if "elapsed_seconds" in command:
+            payload["elapsed_seconds"] = command["elapsed_seconds"]
+
         try:
+            print(" JSON PAYLOAD X2:", payload)
             response = urequests.post(url, json=payload, headers = self.headers)
 
             print("Status code:", response.status_code)
