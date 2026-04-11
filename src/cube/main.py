@@ -109,10 +109,19 @@ class CubeController:
 
         # --- task_color ---
         color = payload.get("task_color")
+
         if not isinstance(color, str):
             errors.append("task_color must be a string")
-        elif not (color.startswith("#") and len(color) == 7):
-            errors.append("task_color must be format #RRGGBB")
+
+        elif not (color.startswith("#") and len(color) == 9):
+            errors.append("task_color must be format #RRGGBBWW")
+
+        else:
+            hex_part = color[1:]
+            try:
+                int(hex_part, 16)  # validate hex
+            except ValueError:
+                errors.append("task_color must contain valid hex values")
 
         # --- task_time ---
         if not isinstance(payload.get("task_time"), int) or payload.get("task_time") <= 0:
