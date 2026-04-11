@@ -514,6 +514,11 @@ class LP5811:
         except ValueError:
             raise ValueError("Invalid HEX values in color")
 
+        # Reduce white usage while preserving the same final color output.
+        # We can shift white into RGB channels as long as no RGB channel exceeds 255.
+        delta = max( 255 - r, 255 - g, 255 - b)
+        w =w -  delta
+
         return [r, g, b, w]
 
     def success_animation(self):
