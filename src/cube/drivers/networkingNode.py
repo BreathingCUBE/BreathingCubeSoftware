@@ -62,9 +62,9 @@ class NetworkingNode:
         if not self.ensure_connection():
             return None
 
-        url = f"http://{self.server_ip}:{self.port}/api/esp/config"
+      # url = f"http://{self.server_ip}:{self.port}/api/esp/config"
 
-
+        url  = f"https://thecube-api-3nmm.onrender.com/api/task/control"
         print("➡️ Sending GET to:", url)
 
         try:
