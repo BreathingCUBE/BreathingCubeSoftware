@@ -117,8 +117,9 @@ class NetworkingNode:
     def send_command(self, command, presetTime=0, task="Meditation"):
         self.ensure_connection()
 
-        url = f"http://{self.server_ip}:{self.port}/api/task/control"
+        # url = f"http://{self.server_ip}:{self.port}/api/task/control"
 
+        url  = f"https://thecube-api-3nmm.onrender.com/api/task/control"
         payload = {
             "device_id": "cube_01",
             "task": command.get("task", task),
