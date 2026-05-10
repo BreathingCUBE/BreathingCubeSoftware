@@ -85,6 +85,8 @@ def api_task_control(cube_uuid: str):
 
     task_color = task_data.get("task_color")
 
+    task_color = task_data.get("task_color")
+
     # Start action logic
     if action == "start":
         timer.start()
@@ -139,5 +141,12 @@ def api_task_control(cube_uuid: str):
         return jsonify({"message": f"{current_task} task reset",
                         "task_name": current_task,
                         "task_time": task_time,
-                        "task_color": task_color
+                        "task_color": task_color,
+                        "config": {
+                            "task_name": current_task,
+                            "task_time":task_time,
+                            "task_color": task_color,
+                            "timing_pattern": [8, 8, 8, 8],
+                            "alarm_type": "bell"
+                        }
                         }), 200

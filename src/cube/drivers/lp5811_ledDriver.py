@@ -362,7 +362,7 @@ class LP5811:
     #initialization sequence for auto mode
     def init_auto(self):
         self.write_reg(CHIP_ENABLE_REGISTER, 0x01)   # Chip_Enable_Register
-        self.write_reg(DEV_CONFIG0_REGISTER, 0x01)   # Dev_Config0_Register current limit 25mA, set 0x00 , 0x01
+        self.write_reg(DEV_CONFIG0_REGISTER, 0x00)   # Dev_Config0_Register current limit 25mA, set 0x00 , 0x01
         self.write_reg(DEV_CONFIG1_REGISTER, 0x80)   # 24KHz pwm freq in direct drive mode
         self.write_reg(DEV_CONFIG3_REGISTER, 0x0F)   # auto mode, on all LED's
         self.write_reg(DEV_CONFIG5_REGISTER, 0x0F)   # Enable exponential curve dimming mode for all LED's
@@ -484,38 +484,45 @@ class LP5811:
             pwm1=gs_start,pwm2=gs_end,pwm3=gs_end,pwm4=gs_start,pwm5=gs_start,
             t1=duration_ms[0], t2=duration_ms[1], t3=duration_ms[2], t4=duration_ms[3],
             pt=repeat_times # infinite playback
-        )
+            )
     def hex_to_rgbw(self, hex_color: str):
         """
-        Convert HEX color (#RRGGBB) to RGBW.
+        Convert HEX color (#RRGGBBWW) to RGBW.
+
         Parameters
         ----------
         hex_color : str
-            Color string like "#ffaa00"
+            Color string like "#ffaa00ff"
+
         Returns
         -------
-        tuple
-            (r, g, b, w) values from 0–255
+        list
+            [r, g, b, w] values from 0–255
         """
 
-        # Convert HEX → RGB
-        r = int(hex_color[1:3], 16)
-        g = int(hex_color[3:5], 16)
-        b = int(hex_color[5:7], 16)
+        if not isinstance(hex_color, str):
+            raise ValueError("hex_color must be a string")
 
-        # Extract white component
-        w = min(r, g, b)
+        if not (hex_color.startswith("#") and len(hex_color) == 9):
+            raise ValueError("hex_color must be format #RRGGBBWW")
 
-        # Remove white from RGB
-        r -= w
-        g -= w
-        b -= w
+        try:
+            r = int(hex_color[1:3], 16)
+            g = int(hex_color[3:5], 16)
+            b = int(hex_color[5:7], 16)
+            w = int(hex_color[7:9], 16)
+        except ValueError:
+            raise ValueError("Invalid HEX values in color")
+
+        # Reduce white usage while preserving the same final color output.
+        # We can shift white into RGB channels as long as no RGB channel exceeds 255.
+        delta = max( 255 - r, 255 - g, 255 - b)
+        w =w -  delta
 
         return [r, g, b, w]
 
     def success_animation(self):
         self.init_auto()
-        print("Success mode: flashing green")
         self.led_all_breathing(RGBW=[0, 255, 0, 0], duration_ms=[0x02, 0x03, 0x04, 0x05], repeat_times=0x00)  # Green breathing, fast, play once
         time.sleep_ms(5) # 5ms delay to ensure settings are applied before starting
         self.start_cmd()

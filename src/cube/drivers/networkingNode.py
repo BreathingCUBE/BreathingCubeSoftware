@@ -21,7 +21,12 @@ class NetworkingNode:
         self.server_ip = server_ip
         self.port = port
         self.wlan = network.WLAN(network.STA_IF)
-        self.bearerToken = "supersecretbearertoken" 
+
+        self.cube_uuid =  "test-cube-uuid-001"
+        self.headers = {
+            "X-API-Key": self.cube_uuid  
+        }
+
 
         print("Server IP:", self.server_ip)
         print("Port:", self.port)
@@ -57,16 +62,13 @@ class NetworkingNode:
         if not self.ensure_connection():
             return None
 
-        url = f"http://{self.server_ip}:{self.port}/api/esp/config"
+      # url = f"http://{self.server_ip}:{self.port}/api/esp/config"
 
-        headers = {
-            "Authorization": f"Bearer {self.bearerToken}"
-        }
-
+        url  = f"https://thecube-api-3nmm.onrender.com/api/task/control"
         print("➡️ Sending GET to:", url)
 
         try:
-            response = urequests.get(url, headers=headers)
+            response = urequests.get(url, headers=self.headers)
             print("⬅️ Status:", response.status_code)
             raw = response.text
             print("⬅️ Raw response:", raw)
@@ -106,26 +108,32 @@ class NetworkingNode:
       "task": "Meditation",
       "COMMAND": "START",
       "timestamp": 1719954000, # UNIX timestamp in seconds, may be useful for future iterations of project
-      "timeElapsed": 0,
+      "elapsed_seconds": 0,
       "preset time": 1200
     }
     # '''
-    def send_command(self, command, timeElapsed=-1, presetTime=-1, task="Meditation"):
+
+
+    def send_command(self, command, presetTime=0, task="Meditation"):
         self.ensure_connection()
 
-        url = f"http://{self.server_ip}:{self.port}/api/esp/telemetry"
+        # url = f"http://{self.server_ip}:{self.port}/api/task/control"
 
+        url  = f"https://thecube-api-3nmm.onrender.com/api/task/control"
         payload = {
             "device_id": "cube_01",
-            "task": task,
-            "COMMAND": command,   # "START", "STOP", "RESET"
+            "task": command.get("task", task),
+            "action": command.get("action"),   # "START", "STOP", "RESET"
             "timestamp": time.time(),
-            "timeElapsed": timeElapsed,
             "presetTime": presetTime   # fixed key (no space)
         }
 
+        if "elapsed_seconds" in command:
+            payload["elapsed_seconds"] = command["elapsed_seconds"]
+
         try:
-            response = urequests.post(url, json=payload)
+            print(" JSON PAYLOAD X2:", payload)
+            response = urequests.post(url, json=payload, headers = self.headers)
 
             print("Status code:", response.status_code)
             try:
