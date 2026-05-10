@@ -1,11 +1,15 @@
 import requests
+import time
 from . import auth_bp
 from config import Config
 from src.server.decorators.auth import login_required
 from src.server.utils.repository import save_user_info
 from src.server.utils.auth import create_firebase_user
-from flask import request, render_template, redirect, url_for, session, jsonify
+from src.server.logging_config import get_logger
+from flask import request, render_template, redirect, url_for, session, jsonify, has_request_context
 from src.server.utils.validation import validate_login_data, require_json_content_type
+
+logger = get_logger(__name__)
 
 
 @auth_bp.route("/login", methods=["GET", "POST"])
@@ -45,14 +49,29 @@ def login():
             session["uid"] = uid
             session["email"] = email
             session["jwt_token"] = token_data.get("idToken")
+            logger.info(f"User '{email}' logged in successfully", extra={
+                'user_id': uid,
+                'endpoint': '/login',
+                'method': 'POST'
+            })
             return redirect(url_for("dashboard.home"))
 
         error_data = res.json().get("error", {})
         error_message = error_data.get("message", "Invalid credentials")
         if "INVALID_LOGIN_CREDENTIALS" in error_message:
             error_message = "Invalid email or password"
+        logger.warning(f"Failed login attempt for email '{email}'", extra={
+            'endpoint': '/login',
+            'method': 'POST',
+            'error_type': 'invalid_credentials'
+        })
         return render_template("login.html", error=error_message)
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Authentication service error: {str(e)}", extra={
+            'endpoint': '/login',
+            'method': 'POST',
+            'error_type': 'service_unavailable'
+        })
         return render_template("login.html", error="Authentication service unavailable")
 
 
@@ -85,12 +104,23 @@ def signup():
     # Create user via Firebase Authentication Service
     (user, error) = create_firebase_user(email, password)
     if error:
+        logger.warning(f"Failed signup attempt for email '{email}'", extra={
+            'endpoint': '/signup',
+            'method': 'POST',
+            'error_type': 'user_creation_failed'
+        })
         return render_template("signup.html", error=error)
 
     # Save new user information to database
     uid = user.uid
     user_info = {"email": email, "role": "user"}
     save_user_info(uid, user_info)
+    
+    logger.info(f"New user '{email}' registered successfully", extra={
+        'user_id': uid,
+        'endpoint': '/signup',
+        'method': 'POST'
+    })
 
     return redirect(url_for("auth.login"))
 
@@ -136,10 +166,26 @@ def api_login():
 
         if res.status_code == 200:
             # Return JWT on success
+            uid = res.json().get("localId")
+            logger.info(f"API login successful for '{email}'", extra={
+                'user_id': uid,
+                'endpoint': '/api/login',
+                'method': 'POST'
+            })
             return jsonify({"token": res.json()["idToken"]}), 200
 
+        logger.warning(f"API login failed for '{email}'", extra={
+            'endpoint': '/api/login',
+            'method': 'POST',
+            'error_type': 'invalid_credentials'
+        })
         return jsonify({"error": "Invalid credentials"}), 401
-    except requests.RequestException:
+    except requests.RequestException as e:
+        logger.error(f"Authentication service error: {str(e)}", extra={
+            'endpoint': '/api/login',
+            'method': 'POST',
+            'error_type': 'service_error'
+        })
         return jsonify({"error": "Authentication service unavailable"}), 503
 
 

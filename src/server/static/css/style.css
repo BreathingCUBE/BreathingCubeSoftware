@@ -1084,6 +1084,21 @@ input:-webkit-autofill:active{
     color: #f5f5f5;
 }
 
+.stat-value {
+    transition: all 0.3s ease;
+}
+
+/* Optional: Add a subtle flash animation when data updates */
+.updated-flash {
+    animation: flash 1s;
+}
+
+@keyframes flash {
+    0% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+
 /* Intensity Map */
 .intensity-map-section {
     margin-bottom: 3rem;

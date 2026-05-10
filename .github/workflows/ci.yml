@@ -23,5 +23,7 @@ jobs:
           pip install pytest pytest-cov
 
       - name: Run tests
+        env:
+          FLASK_SECRET_KEY: ${{ secrets.FLASK_SECRET_KEY }}
         run: |
           pytest tests/ -v --maxfail=1 --disable-warnings

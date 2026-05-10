@@ -1,44 +1,50 @@
-# Add this at the VERY TOP, before any other imports
-import sys
-from unittest.mock import MagicMock, patch
-import types
-
-# Early mock to prevent firebase.py from running
-mock_user_profiles = MagicMock(name="mock_user_profiles")
-mock_cubes = MagicMock(name="mock_cubes")
-mock_user_doc = MagicMock()
-mock_cube_doc = MagicMock()
-mock_user_profiles.document.return_value = mock_user_doc
-mock_cubes.document.return_value = mock_cube_doc
-
-mock_user_doc.get.return_value.exists = True
-mock_user_doc.get.return_value.to_dict.return_value = {
-    "current_task": "Meditation",
-    "presets": {"Meditation": {"task_color": "#ffaa00", "task_time": 600}},
-    "session_history": [{"elapsed_time": 300, "task": "Meditation", "timestamp": "2023-01-01T00:00:00"}],
-    "user_info": {"email": "test_email@gmail.com", "first_name": "Johnny", "last_name": "Test", "role": "user"}
-}
-mock_cube_doc.get.return_value.exists = True
-mock_cube_doc.get.return_value.to_dict.return_value = {"user uid": "test_user_uid"}
-
-fake_firebase = types.ModuleType("firebase")
-fake_firebase.user_profiles = mock_user_profiles
-fake_firebase.cubes = mock_cubes
-sys.modules["firebase"] = fake_firebase
-
-# Prevent real init
-patch('firebase_admin.initialize_app').start()
-
-# Now your original imports and fixtures
+# conftest.py
 import pytest
+from unittest.mock import MagicMock, patch
 import importlib
-#from unittest.mock import MagicMock
+
+# Patch Firebase to prevent file access and initialization during import
+patch('firebase_admin.credentials.Certificate').start()
+patch('firebase_admin.initialize_app').start()
+patch('firebase_admin.firestore.client').start()
 
 
 @pytest.fixture
-def client(monkeypatch):
+def mock_firestore_client():
+    """Mock Firestore client that tracks all operations."""
+    with patch('firebase_admin.firestore.client') as mock_db:
+        # Create mock collections
+        mock_user_profiles = MagicMock()
+        mock_cubes = MagicMock()
+        mock_session_history = MagicMock()
+
+        # Set up the db to return mock collections
+        mock_db.return_value.collection.side_effect = lambda name: {
+            'user_profiles': mock_user_profiles,
+            'cubes': mock_cubes,
+            'session_history': mock_session_history
+        }.get(name, MagicMock())
+
+        yield {
+            'db': mock_db,
+            'user_profiles': mock_user_profiles,
+            'cubes': mock_cubes,
+            'session_history': mock_session_history
+        }
+
+
+@pytest.fixture
+def mock_firebase_init():
+    """Mock Firebase initialization."""
+    with patch('firebase_admin.initialize_app'):
+        yield
+
+
+@pytest.fixture
+def client(mock_firebase_init, mock_firestore_client, monkeypatch):
     """Flask test client fixture with TESTING enabled."""
     monkeypatch.setenv("CUBE_API_KEY", "test-key")
+    monkeypatch.setenv("APP_TYPE", "api")
 
     app_module = importlib.import_module("run")
     app = app_module.create_app()
@@ -51,19 +57,6 @@ def client(monkeypatch):
 
 
 @pytest.fixture
-def mock_firestore():
-    """Return the global mock firestore objects for per-test overrides."""
-    return {
-        "user_profiles": mock_user_profiles,
-        "user_doc_ref": mock_user_doc,
-        "user_snapshot": mock_user_doc.get.return_value,
-        "cubes": mock_cubes,
-        "cube_doc_ref": mock_cube_doc,
-        "cube_snapshot": mock_cube_doc.get.return_value,
-    }
-
-
-@pytest.fixture
 def mock_firebase_auth(monkeypatch):
     """Patch JWT verification to return a known test uid by default."""
     verify_mock = MagicMock(return_value={"uid": "test_user_123"})
@@ -72,66 +65,13 @@ def mock_firebase_auth(monkeypatch):
 
 
 @pytest.fixture
-def repo():
-    """Reload repository module to ensure fresh mocks."""
+def repo(mock_firestore_client):
+    """Reload repository module and patch repo-level Firestore refs."""
     import src.server.utils.repository
-    return importlib.reload(src.server.utils.repository)
+    module = importlib.reload(src.server.utils.repository)
 
+    module.user_profiles = mock_firestore_client['user_profiles']
+    module.cubes = mock_firestore_client['cubes']
+    module.session_history = mock_firestore_client['session_history']
 
-@pytest.fixture
-def mock_cube_request(monkeypatch):
-    """Mock cube_request fixture."""
-    cube_request_mock = MagicMock()
-    monkeypatch.setattr(
-        "src.server.blueprints.api_cube.routes.get_cube_user",
-        lambda cube_uuid: "test_uid"
-    )
-    monkeypatch.setattr(
-        "src.server.blueprints.api_cube.routes.get_current_task",
-        lambda uid: "Meditation"
-    )
-    monkeypatch.setattr(
-        "src.server.blueprints.api_cube.routes.get_task_preset",
-        lambda uid, task: {"task_time": 600}
-    )
-    monkeypatch.setattr(
-        "src.server.blueprints.api_cube.routes.save_session",
-        lambda uid, current_task, elapsed_time: None
-    )
-    return cube_request_mock
-
-
-@pytest.fixture
-def mock_presets_repository(monkeypatch):
-    """Mock presets repository fixture."""
-    presets_repository_mock = MagicMock()
-    monkeypatch.setattr(
-        "src.server.blueprints.api_presets.routes.get_all_task_presets",
-        lambda uid: {"Meditation": {"task_color": "#ffaa00", "task_time": 600}}
-    )
-    monkeypatch.setattr(
-        "src.server.blueprints.api_presets.routes.get_task_preset",
-        lambda uid, task_name: {"task_color": "#ffaa00", "task_time": 600}
-    )
-    monkeypatch.setattr(
-        "src.server.blueprints.api_presets.routes.update_task_preset",
-        lambda uid, task_name, updated_preset_data: None
-    )
-    monkeypatch.setattr(
-        "src.server.blueprints.api_presets.routes.delete_task_preset",
-        lambda uid, task_name: None
-    )
-    return presets_repository_mock
-
-
-@pytest.fixture
-def bypass_auth(monkeypatch):
-    def fake_require_jwt(f):
-        def wrapper(*args, **kwargs):
-            return f(*args, uid="test_user_123", **kwargs)
-        return wrapper
-
-    monkeypatch.setattr(
-        "src.server.decorators.auth.require_jwt",
-        fake_require_jwt
-    )
+    return module

@@ -1,5 +1,5 @@
 import pytest
-from src.server.utils.validation import validate_login_data, validate_preset, validate_user_info, normalize_task_color
+from src.server.utils.validation import validate_login_data, validate_preset, validate_user_info, normalize_task_color, parse_time
 
 @pytest.mark.parametrize("email, password, confirm_password, expected",
     [
@@ -127,3 +127,21 @@ def test_validate_user_info(first_name, last_name, expected):
 )
 def test_normalize_task_color(task_color, expected):
     assert normalize_task_color(task_color) == expected
+
+
+@pytest.mark.parametrize("time, expected",
+    [
+        # Valid time
+        (73, (1,13)),
+        # Valid time
+        (35, (0,35)),
+        # zero time input
+        (0, (None,None)),
+        # negative time input
+        (-1, (None,None)),
+        # noninteger time input
+        ("45", (None,None)),
+    ]
+)
+def test_parse_time(time, expected):
+    assert parse_time(time) == expected

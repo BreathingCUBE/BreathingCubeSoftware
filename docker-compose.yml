@@ -1,0 +1,75 @@
+
+
+services:
+  # Web service: handles UI routes, dashboard, templates
+  web:
+    build:
+      context: .
+      target: development
+    container_name: cube-web
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      - FLASK_DEBUG=1
+      - FLASK_APP=run.py
+      - APP_TYPE=web
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+    networks:
+      - cube_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    depends_on:
+      - api
+
+  # API service: handles REST API endpoints (/api/*)
+  api:
+    build:
+      context: .
+      target: development
+    container_name: cube-api
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    environment:
+      - FLASK_DEBUG=1
+      - FLASK_APP=run.py
+      - APP_TYPE=api
+      - LOG_LEVEL=DEBUG
+      - WEB_INTERNAL_URL=http://web:5000
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+    networks:
+      - cube_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  cube_network:
+    driver: bridge

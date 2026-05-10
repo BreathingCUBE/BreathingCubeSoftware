@@ -1,8 +1,11 @@
 from . import api_timer_bp
 from flask import request, jsonify, current_app
 from src.server.decorators.auth import require_jwt
+from src.server.logging_config import get_logger
 from src.server.utils.validation import require_json_content_type
 from src.server.utils.repository import get_task_preset
+
+logger = get_logger(__name__)
 
 
 ##########################################################################
@@ -14,6 +17,7 @@ from src.server.utils.repository import get_task_preset
 @api_timer_bp.post("/timer/reset")
 @require_jwt
 def api_reset_timer(uid: str):
+    """Reset web timer to selected preset task time."""
 
     # Get timer object
     timer = current_app.timer
@@ -40,7 +44,14 @@ def api_reset_timer(uid: str):
     task_time = preset_data.get("task_time")
 
     # resetting time from preset_data
+    timer.stop()
     timer.reset(task_time)
+
+    logger.info(f"Timer reset via API for task '{task_name}' ({task_time}s)", extra={
+        'user_id': uid,
+        'endpoint': '/api/timer/reset',
+        'method': 'POST'
+    })
 
     # return success
     return jsonify({"task_time": task_time}), 200

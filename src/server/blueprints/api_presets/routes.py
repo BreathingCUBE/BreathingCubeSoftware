@@ -1,8 +1,11 @@
 from . import api_presets_bp
 from flask import request, jsonify
 from src.server.decorators.auth import require_jwt
+from src.server.logging_config import get_logger
 from src.server.utils.validation import normalize_task_color, require_json_content_type, validate_preset
 from src.server.utils.repository import delete_task_preset, update_task_preset, get_all_task_presets, get_task_preset
+
+logger = get_logger(__name__)
 
 
 ##########################################################################
@@ -41,20 +44,45 @@ def api_get_preset(uid: str, task_name: str):
     if task_name == "All":
         presets = get_all_task_presets(uid)
         if not presets:
+            logger.warning(f"No presets configured for user", extra={
+                'user_id': uid,
+                'endpoint': '/api/profile/preset/All',
+                'method': 'GET',
+                'error_type': 'no_presets'
+            })
             return jsonify({"error": "No presets configured."}), 404
+        logger.info(f"Retrieved all presets for user", extra={
+            'user_id': uid,
+            'endpoint': '/api/profile/preset/All',
+            'method': 'GET',
+            'preset_count': len(presets)
+        })
         return jsonify({"presets": presets}), 200
 
     # Return preset data
     preset_data = get_task_preset(uid, task_name)
     if not preset_data:
+        logger.warning(f"Preset not found: {task_name}", extra={
+            'user_id': uid,
+            'endpoint': '/api/profile/preset/{task_name}',
+            'method': 'GET',
+            'task_name': task_name,
+            'error_type': 'preset_not_found'
+        })
         return jsonify({"error": "Preset not found"}), 404
+    logger.info(f"Retrieved preset: {task_name}", extra={
+        'user_id': uid,
+        'endpoint': '/api/profile/preset/{task_name}',
+        'method': 'GET',
+        'task_name': task_name
+    })
     return jsonify({f"{task_name}": preset_data}), 200
 
 
 @api_presets_bp.post("/profile/preset")
 @require_jwt
 def api_create_preset(uid: str):
-    """Create new preset task configuration from a JSON body."""
+    """Create new preset task configuration."""
 
     # Extract preset data from JSON
     data = extract_preset_data()
@@ -79,6 +107,14 @@ def api_create_preset(uid: str):
 
     # Save new preset task in database
     update_task_preset(uid, task_name, preset_data)
+    
+    logger.info(f"Preset created: {task_name}", extra={
+        'user_id': uid,
+        'endpoint': '/api/profile/preset',
+        'method': 'POST',
+        'task_name': task_name,
+        'task_time': task_time
+    })
 
     return jsonify({f"{task_name}": preset_data,}), 201
 
@@ -86,7 +122,7 @@ def api_create_preset(uid: str):
 @api_presets_bp.put("/profile/preset")
 @require_jwt
 def api_update_preset(uid: str):
-    """Update preset task configuration from a JSON body."""
+    """Update preset task configuration."""
 
     #Extract preset data from JSON
     data = extract_preset_data()
@@ -112,6 +148,13 @@ def api_update_preset(uid: str):
 
     # Save updated preset task in database
     update_task_preset(uid, task_name, updated_preset_data)
+    
+    logger.info(f"Preset updated: {task_name}", extra={
+        'user_id': uid,
+        'endpoint': '/api/profile/preset',
+        'method': 'PUT',
+        'task_name': task_name
+    })
 
     # Return updated task with all fields
     preset_data = get_task_preset(uid, task_name)
@@ -143,5 +186,12 @@ def api_delete_preset(uid: str):
         return jsonify({"error": "Preset not found"}), 404
 
     delete_task_preset(uid, task_name)
+    
+    logger.info(f"Preset deleted: {task_name}", extra={
+        'user_id': uid,
+        'endpoint': '/api/profile/preset',
+        'method': 'DELETE',
+        'task_name': task_name
+    })
 
     return jsonify({"message": f"{task_name} task preset information successfully deleted."}), 200

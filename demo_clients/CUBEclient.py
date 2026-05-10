@@ -4,7 +4,7 @@ import requests
 import threading
 import json
 
-SERVER_URL = "http://127.0.0.1:5000/api/task/control"
+SERVER_URL = "https://thecube-api-3nmm.onrender.com/api/task/control"
 
 
 # ----- Dark Mode Colors -----
@@ -80,6 +80,13 @@ class CubeSimulatorGUI:
         tk.Label(info_frame, textvariable=self.elapsed_var, width=20, anchor="w",
                  bg=BG_COLOR, fg=ACCENT_COLOR, font=("Helvetica", 11, "bold")).grid(row=2, column=1, padx=5)
 
+        tk.Label(info_frame, text="Color:", bg=BG_COLOR, fg=FG_COLOR).grid(row=3, column=0, padx=5, sticky="e")
+        self.task_color_canvas = tk.Canvas(info_frame, width=20, height=20, highlightthickness=1, bg=BG_COLOR)
+        self.task_color_canvas.grid(row=3, column=1, sticky="w", padx=5)
+        self.task_color_rect = self.task_color_canvas.create_rectangle(1, 1, 19, 19, fill=BUTTON_BG, outline=ACCENT_COLOR)
+        self.task_color_var = tk.StringVar(value="N/A")
+        tk.Label(info_frame, textvariable=self.task_color_var, bg=BG_COLOR, fg=ACCENT_COLOR, font=("Helvetica", 11, "bold")).grid(row=3, column=2, padx=5, sticky="w")
+
         # ===== Buttons =====
         button_frame = tk.Frame(root, bg=BG_COLOR)
         button_frame.pack(pady=10)
@@ -118,6 +125,57 @@ class CubeSimulatorGUI:
         else:
             self.led_canvas.itemconfig(self.led_rect, fill=ACCENT_DIM)
             self.led_canvas.itemconfig(self.led_text, text="OFF")
+
+    def _normalize_task_color(self, color):
+        if not color or not isinstance(color, str):
+            return None
+
+        text = color.strip().lstrip('#')
+        if len(text) == 6:
+            if all(ch in '0123456789abcdefABCDEF' for ch in text):
+                return f"#{text.upper()}"
+            return None
+
+        if len(text) == 8:
+            try:
+                r = int(text[0:2], 16)
+                g = int(text[2:4], 16)
+                b = int(text[4:6], 16)
+                w = int(text[6:8], 16)
+            except ValueError:
+                return None
+            r = min(255, r + w)
+            g = min(255, g + w)
+            b = min(255, b + w)
+            return f"#{r:02X}{g:02X}{b:02X}"
+
+        if len(text) == 4:
+            try:
+                r = int(text[0], 16) * 17
+                g = int(text[1], 16) * 17
+                b = int(text[2], 16) * 17
+                w = int(text[3], 16) * 17
+            except ValueError:
+                return None
+            r = min(255, r + w)
+            g = min(255, g + w)
+            b = min(255, b + w)
+            return f"#{r:02X}{g:02X}{b:02X}"
+
+        return None
+
+    def set_task_color(self, color):
+        normalized = self._normalize_task_color(color)
+        if normalized:
+            try:
+                self.task_color_canvas.itemconfig(self.task_color_rect, fill=normalized)
+                self.task_color_var.set(color)
+            except tk.TclError:
+                self.task_color_canvas.itemconfig(self.task_color_rect, fill=BUTTON_BG)
+                self.task_color_var.set("Invalid")
+        else:
+            self.task_color_canvas.itemconfig(self.task_color_rect, fill=BUTTON_BG)
+            self.task_color_var.set("N/A")
 
 
     # ---------- Timer Logic ----------
@@ -239,6 +297,9 @@ class CubeSimulatorGUI:
             minutes = task_time // 60
             seconds = task_time % 60
             self.task_time_var.set(f"{minutes:02d}:{seconds:02d}")
+
+        task_color = data.get("task_color")
+        self.set_task_color(task_color)
 
 
     # ---------- Display ----------

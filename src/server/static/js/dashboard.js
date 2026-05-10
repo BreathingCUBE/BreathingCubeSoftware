@@ -98,7 +98,7 @@ function connectTimerStream() {
 async function syncCurrentTask() {
   if (!taskSelect) return;
   try {
-    const res = await fetch("/task/current");
+    const res = await fetch(`${API_BASE}/task/current`);
     if (!res.ok) return;
     const data = await res.json();
     const current = data.current_task;
@@ -155,7 +155,7 @@ async function setActiveTask(taskName) {
 
     try {
         closeTimerStream();
-        const res = await fetch("/task/current", {
+        const res = await fetch(`${API_BASE}/task/current`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ task_name: taskName })
@@ -182,7 +182,7 @@ async function applyTaskPreset(taskName) {
     if (!taskName || taskName === 'new_task_trigger') return;
 
     try {
-        const res = await fetch(`/profile/preset/${encodeURIComponent(taskName)}`);
+        const res = await fetch(`${API_BASE}/profile/preset/${encodeURIComponent(taskName)}`);
         if (!res.ok) return;
 
         const data = await res.json();

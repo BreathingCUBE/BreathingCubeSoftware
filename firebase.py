@@ -11,3 +11,4 @@ if not firebase_admin._apps:
 db = firestore.client()
 user_profiles = db.collection("user_profiles")
 cubes = db.collection("cubes")
+session_history = db.collection("session_history")

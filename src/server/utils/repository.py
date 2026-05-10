@@ -1,4 +1,4 @@
-from firebase import user_profiles, cubes
+from firebase import user_profiles, cubes, session_history
 from google.cloud.firestore import DELETE_FIELD, ArrayUnion, SERVER_TIMESTAMP
 from datetime import datetime, timezone
 
@@ -126,31 +126,32 @@ def get_session(uid: str):
 
 def get_sessions(uid: str, limit: int = 100):
     """Retrieve all sessions for a user (newest first)."""
-    doc = user_profiles.document(uid).get()
-    if not doc.exists:
-        return []
-
-    sessions = doc.to_dict().get("session_history", [])
-    # Sort by timestamp descending (most recent first)
-    return sorted(sessions, key=lambda s: s.get("timestamp", ""), reverse=True)[:limit]
+    docs = (
+        session_history.document(uid).collection("sessions")
+        .order_by("timestamp", direction="DESCENDING")
+        .limit(limit)
+        .stream()
+    )
+    return [doc.to_dict() for doc in docs]
 
 
 def get_sessions_by_date_range(uid: str, start_date: str, end_date: str):
     """Get sessions within a date range (ISO format: YYYY-MM-DD)."""
-    sessions = get_sessions(uid, limit=365)
-
     start_iso = f"{start_date}T00:00:00"
     end_iso = f"{end_date}T23:59:59"
 
-    return [
-        s for s in sessions
-        if start_iso <= s.get("timestamp", "")[:19] <= end_iso
-    ]
+    docs = (
+        session_history.document(uid).collection("sessions")
+        .where("timestamp", ">=", start_iso)
+        .where("timestamp", "<=", end_iso)
+        .order_by("timestamp", direction="DESCENDING")
+        .stream()
+    )
+    return [doc.to_dict() for doc in docs]
 
 
 def save_session(uid: str, task: str, elapsed_time: int, task_color: str = None):
     """Append a new session to session_history array with server timestamp."""
-    doc_ref = user_profiles.document(uid)
     session_data = {
         "task": task,
         "elapsed_time": elapsed_time,
@@ -159,7 +160,5 @@ def save_session(uid: str, task: str, elapsed_time: int, task_color: str = None)
     if task_color:
         session_data["task_color"] = task_color
 
-    # Use ArrayUnion to append session instead of overwrite
-    doc_ref.update({
-        "session_history": ArrayUnion([session_data])
-    })
+    # Subcollection: session_history/{uid}/sessions/{auto-id}
+    session_history.document(uid).collection("sessions").add(session_data)

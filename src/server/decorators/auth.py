@@ -1,8 +1,8 @@
 import os
+import hmac
 from functools import wraps
 from firebase_admin import auth
 from flask import request, jsonify, redirect, url_for, session
-    
 
 def login_required(f):
     @wraps(f)
@@ -44,7 +44,11 @@ def require_jwt(f):
 
 
 def require_api_key(f):
-    """Decorator to require API key authentication for device endpoints."""
+    """Decorator to require API key authentication for device endpoints.
+    
+    Expected header: X-API-Key: <actual_cube_uuid>
+    The X-API-Key header should contain the cube's UUID for authentication.
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         # Get the expected key from environment
@@ -65,8 +69,12 @@ def require_api_key(f):
             print("Expected key:", expected_key)
             return jsonify({"error": "Unauthorized"}), 401
 
-        # Allow the route to execute normally
-        return f(*args, cube_uuid=provided_key, **kwargs)
+        # Security: X-API-Key header should contain the actual cube_uuid
+        # Not the API key itself. Extract from request if provided.
+        cube_uuid = request.headers.get("X-Cube-UUID", provided_key)
+
+        # Allow the route to execute with the cube UUID
+        return f(*args, cube_uuid=cube_uuid, **kwargs)
     return decorated_function
 
 

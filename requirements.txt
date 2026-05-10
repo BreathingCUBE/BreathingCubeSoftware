@@ -6,3 +6,5 @@ firebase_admin
 numpy
 protobuf
 pytest
+gunicorn
+docker

@@ -132,3 +132,11 @@ def normalize_task_color(task_color):
     return task_color
 
 
+def parse_time(total_time_sec: int):
+    if not isinstance(total_time_sec, int) or not total_time_sec > 0:
+        return None, None
+    minutes = total_time_sec // 60
+    seconds = total_time_sec % 60
+    return minutes, seconds
+
+
