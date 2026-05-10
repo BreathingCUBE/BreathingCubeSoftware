@@ -34,20 +34,20 @@ class CubeController:
         self.onboard_led = Pin(2, Pin.OUT)
 
         # ADC (if you still want it; PiezoButton already uses pin=34 in your code)
-        self.adc = ADC(Pin(34))
-        self.adc.atten(ADC.ATTN_11DB)
+        # self.adc = ADC(Pin(34))
+        # self.adc.atten(ADC.ATTN_11DB)
 
         # I2C + LP5811
-        self.i2c = I2C(0, scl=Pin(22), sda=Pin(21))
+        self.i2c = I2C(0, scl=Pin(7), sda=Pin(6))
         self.lp = LP5811(self.i2c)
 
         # PWM outputs
-        self.speaker_pwm = PWM(Pin(18), freq=1000)
-        self.vibration_pwm = PWM(Pin(19), freq=1000)
+        # self.speaker_pwm = PWM(Pin(18), freq=1000)
+        # self.vibration_pwm = PWM(Pin(19), freq=1000)
 
         # Inputs
-        self.piezo = PiezoButton(pin=34)
-        self.alarm = Alarm(speaker_pin=18)
+        self.piezo = PiezoButton(pin=1)
+        self.alarm = Alarm(speaker_pin=10)
 
         # Timer (callbacks point to controller methods)
         self.timer = PomodoroTimer(

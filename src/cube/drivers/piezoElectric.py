@@ -64,7 +64,7 @@ class PiezoButton:
 
 
         # print(self.state, delta)
-        # print(f"Sample: {sample}, Baseline: {self.baseline:.2f}, Delta: {delta:.2f}, State: {self.state}")
+        print(f"Sample: {sample}, Baseline: {self.baseline:.2f}, Delta: {delta:.2f}, State: {self.state}")
         now = time.ticks_ms()
         result = 0
 
