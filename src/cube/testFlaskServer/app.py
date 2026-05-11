@@ -11,7 +11,7 @@ def get_config():
     config = {
         "task_name": "Meditation",
         "task_time":10,
-        "task_color": "#0004D4",
+        "task_color": "#0004D400",
         "timing_pattern": [4, 4, 4, 4],
         "alarm_type": "bell"
     }
@@ -19,7 +19,7 @@ def get_config():
 
 
 # ---- TELEMETRY (POST) ---- This gets called upon START/STOP COMMAND command
-@app.route("/api/esp/telemetry", methods=["POST"])
+@app.route("/api/task/control", methods=["POST"])
 def telemetry():
     data = request.get_json()
     # print("RAW DATA:", data)
@@ -31,12 +31,12 @@ def telemetry():
 
     if action == "START":
         state["mode"] = "running"
-        state["task"] = data.get('task')
-        state["time Elapsed"] = data.get('timeElapsed')
+        state["task"] = data.get("task")
+        state["time Elapsed"] = data.get("timeElapsed")
 
     elif action == "STOP":
         state["mode"] = "stopped"
-        state["timeElapsed"] = data.get('timeElapsed')
+        state["timeElapsed"] = data.get("timeElapsed")
 
     elif action == "RESET":
         state["mode"] = "stopped"
@@ -49,7 +49,7 @@ def telemetry():
     response = {
         "status": "ok",
         "state": state
-    }
+    } 
 
     return jsonify(response), 200
 

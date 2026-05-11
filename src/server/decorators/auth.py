@@ -63,8 +63,10 @@ def require_api_key(f):
         if not provided_key:
             return jsonify({"error": "Missing X-API-Key header"}), 401
 
-        # Compare keys (constant-time comparison to prevent timing attacks)
-        if not hmac.compare_digest(provided_key, expected_key):
+        # Compare keys
+        if provided_key != expected_key:
+            print("Provided key:", provided_key)
+            print("Expected key:", expected_key)
             return jsonify({"error": "Unauthorized"}), 401
 
         # Security: X-API-Key header should contain the actual cube_uuid
