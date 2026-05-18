@@ -1,7 +1,6 @@
 # main.py (MicroPython / ESP32)
 # .\push.ps1
 
-
 # one button, one led, one timer, and a dream
 
 import time
@@ -84,8 +83,9 @@ class CubeController:
     def on_session_complete(self):
         print("Timer finished")
         self.alarm.bell()
-        # self.lp.stop_cmd()
-
+        self.lp.stop_cmd()
+        self.timer.pause()
+        
     def on_reminder(self):
         print("Reminder!")
 
