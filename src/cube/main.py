@@ -6,11 +6,16 @@
 import time
 from machine import ADC, I2C, Pin, PWM
 import secrets  # secrets.WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT
+import json
+
 from drivers.lp5811_ledDriver import LP5811
 from drivers.piezoElectric import PiezoButton
 from drivers.pomodoroTimer import PomodoroTimer
 from drivers.alarm import Alarm
 from drivers.networkingNode import NetworkingNode  # adjust import to your actual path/name
+from drivers.batteryMeasurement import BatteryMeasurement 
+from drivers.dataTransfer import DeviceSettings 
+
 import socket
 
 MODE_STOP   = 0
@@ -19,10 +24,8 @@ MODE_CONFIG  = 2
 MODE_ERROR   = 3
 
 
-OFFLINE_RGBW = [0,0,0,255] # default white color, can be changed by server config
+OFFLINE_RGBW = [255,166,0,0] # default white color, can be changed by server config
 OFFLINE_PATTERN = [0x08, 0x08, 0x08, 0x08] # default animation pattern, can be changed by server config
-
-
 
 class CubeController:
     def __init__(self):
@@ -31,23 +34,14 @@ class CubeController:
 
         # ---- Hardware ----
         self.onboard_led = Pin(2, Pin.OUT)
-
-        # ADC (if you still want it; PiezoButton already uses pin=34 in your code)
-        # self.adc = ADC(Pin(34))
-        # self.adc.atten(ADC.ATTN_11DB)
-
         # I2C + LP5811
         self.i2c = I2C(0, scl=Pin(7), sda=Pin(6))
         self.lp = LP5811(self.i2c)
-
-        # PWM outputs
-        # self.speaker_pwm = PWM(Pin(18), freq=1000)
-        # self.vibration_pwm = PWM(Pin(19), freq=1000)
-
         # Inputs
         self.piezo = PiezoButton(pin=1)
         self.alarm = Alarm(speaker_pin=10)
 
+        self.cubeData = DeviceSettings()
         # Timer (callbacks point to controller methods)
         self.timer = PomodoroTimer(
             on_session_complete=self.on_session_complete,
@@ -57,7 +51,6 @@ class CubeController:
         print("Server IP:",  secrets.SERVER_IP)
         print("Port:", secrets.SERVER_PORT)
 
-
         # Networking
         self.network_inst = NetworkingNode(
             secrets.WIFI_SSID,
@@ -65,12 +58,14 @@ class CubeController:
             secrets.SERVER_IP,
             secrets.SERVER_PORT,
         )
+
+
         # THE DIFFERENT MODES ARE PAUSE and RUNNING
-        self.task = "Nothing"
-        self.mode = MODE_RUNNING
-        self.stopWatchPresetTime = 20*60   # 20 minutes in seconds
-        self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
-        self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config
+        self.task = self.cubeData.task
+        self.mode = self.cubeData.mode
+        self.stopWatchPresetTime = self.cubeData.stopWatchPresetTime
+        self.RGBW = self.cubeData.RGBW
+        self.animation_pattern = self.cubeData.animation_pattern
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
@@ -89,6 +84,8 @@ class CubeController:
     def on_reminder(self):
         print("Reminder!")
 
+    # Takes in the JSON payload cube settings, these settings are then applied onto the cube .
+    # The way we should apply it is. We should most def be uploading that data onto the cube JSON file
     def upload_configSettings(self, payload):
         errors = []
 
@@ -148,10 +145,21 @@ class CubeController:
             self.task = payload["task_name"].strip()
             # self.animation_pattern = pattern
             # self.alarm.alarmType = payload["alarm_type"].strip().lower()
+
+            self.cubeData.update_from_json(json.dumps({
+                "task": self.task,
+                "mode": self.mode,
+                "stopWatchPresetTime": self.stopWatchPresetTime,
+                "RGBW": self.RGBW,
+                "animation_pattern": self.animation_pattern,
+                "alarm_type": self.alarm_type
+            }))
+
             return True
         except Exception as e:
             print("Apply error:", e)
             return False
+        
     # ---------- Setup ----------
     def init_lp5811(self) -> bool:
         if not self.lp.ping():
@@ -263,7 +271,6 @@ class CubeController:
             # self.network_inst.connected = False
             self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
             self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config 
-
 
     def toggle_mode(self):
         if self.mode == MODE_STOP:
