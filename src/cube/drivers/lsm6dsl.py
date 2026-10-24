@@ -69,7 +69,7 @@ class LSM6DSL:
         G_FS_2000DPS: 70.0,
     }
 
-    def __init__(self, i2c, addr=None):
+    def __init__(self, i2c, addr=0x6a):
         self.i2c = i2c
 
         if addr is None:
@@ -81,7 +81,7 @@ class LSM6DSL:
         self.gyro_fs = self.G_FS_245DPS
 
         who = self.who_am_i()
-
+        print("LSM6DSL WHO_AM_I = 0x%02X" % who)
         if who != self.WHO_AM_I_VALUE:
             raise RuntimeError(
                 "LSM6DSL not found. WHO_AM_I = 0x%02X, expected 0x6A" % who
@@ -101,6 +101,20 @@ class LSM6DSL:
 
     def read_regs(self, reg, length):
         return self.i2c.readfrom_mem(self.addr, reg, length)
+
+
+    def enableThresholdINT1_init(self):
+        # Standalone motion test: replaces the previous IMU tap configuration.
+        self.write_reg(0x5E, 0x00)  # Disable INT1 event routing during setup
+        self.write_reg(0x12, self.read_reg(0x12) & ~0x30)  # Active-high, push-pull
+        self.write_reg(0x15, self.read_reg(0x15) & ~0x10)  # Accelerometer high-performance
+
+        self.write_reg(0x10, 0x40)
+        self.write_reg(0x58, 0x90)
+        self.write_reg(0x5B, 0x02)
+        self.write_reg(0x5C, 0x60)
+
+        self.write_reg(0x5E, 0x20)
 
     # ------------------------------------------------------------
     # Device setup
@@ -137,6 +151,8 @@ class LSM6DSL:
             odr=self.G_ODR_104HZ,
             full_scale=self.G_FS_245DPS
         )
+
+        self.enableThresholdINT1_init()
 
         time.sleep_ms(100)
 
@@ -242,41 +258,3 @@ class LSM6DSL:
         self.gyro_deinit()
 
     
-
-
-    '''
-    
-    from machine import Pin, I2C
-from time import sleep
-from lsm6dsl import LSM6DSL
-
-
-# Change these pins depending on your board
-i2c = I2C(
-    0,
-    scl=Pin(1),
-    sda=Pin(0),
-    freq=400000
-)
-
-print("Scanning I2C bus...")
-print("Devices found:", [hex(device) for device in i2c.scan()])
-
-imu = LSM6DSL(i2c)
-
-print("LSM6DSL connected")
-print("I2C address:", hex(imu.addr))
-print("WHO_AM_I:", hex(imu.who_am_i()))
-
-while True:
-    ax, ay, az = imu.read_accel_g()
-    gx, gy, gz = imu.read_gyro_dps()
-
-    print("Accel [g]:  X={:.3f}, Y={:.3f}, Z={:.3f}".format(ax, ay, az))
-    print("Gyro [dps]: X={:.3f}, Y={:.3f}, Z={:.3f}".format(gx, gy, gz))
-    print()
-
-    sleep(0.25)
-    
-    
-    '''

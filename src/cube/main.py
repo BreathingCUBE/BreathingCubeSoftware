@@ -14,7 +14,9 @@ from drivers.pomodoroTimer import PomodoroTimer
 from drivers.alarm import Alarm
 from drivers.networkingNode import NetworkingNode  # adjust import to your actual path/name
 from drivers.batteryMeasurement import BatteryMeasurement 
+from drivers.lsm6dsl import LSM6DSL
 from drivers.dataTransfer import DeviceSettings 
+
 
 import socket
 
@@ -27,45 +29,59 @@ MODE_ERROR   = 3
 OFFLINE_RGBW = [255,166,0,0] # default white color, can be changed by server config
 OFFLINE_PATTERN = [0x08, 0x08, 0x08, 0x08] # default animation pattern, can be changed by server config
 
+
 class CubeController:
     def __init__(self):
         # ---- Constants ----
         self.LP5811_ADDR = 0x6D
 
         # ---- Hardware ----
-        self.onboard_led = Pin(2, Pin.OUT)
+        # self.onboard_led = Pin(2, Pin.OUT)
         # I2C + LP5811
         self.i2c = I2C(0, scl=Pin(7), sda=Pin(6))
-        self.lp = LP5811(self.i2c)
-        # Inputs
-        self.piezo = PiezoButton(pin=1)
-        self.alarm = Alarm(speaker_pin=10)
+        # self.lp = LP5811(self.i2c)
+        self.lsm6dsl = LSM6DSL(self.i2c)  # Initialize the LSM6DSL instance
+        LSM6DSL_int1 = Pin(4, Pin.IN)
 
-        self.cubeData = DeviceSettings()
-        # Timer (callbacks point to controller methods)
-        self.timer = PomodoroTimer(
-            on_session_complete=self.on_session_complete,
-            on_reminder=self.on_reminder,
+        LSM6DSL_int1.irq(
+            trigger=Pin.IRQ_RISING,
+            handler=self.on_lsm6dsl_int1
         )
 
-        print("Server IP:",  secrets.SERVER_IP)
-        print("Port:", secrets.SERVER_PORT)
+        self.testNum = 0
+        # Inputs
+        # self.piezo = PiezoButton(pin=0) # This is now a MOSFET so it will not really work
+        # self.alarm = Alarm(speaker_pin=10)
+
+        # self.cubeData = DeviceSettings()
+        # Timer (callbacks point to controller methods)
+        # self.timer = PomodoroTimer(
+        #     on_session_complete=self.on_session_complete,
+        #     on_reminder=self.on_reminder,
+        # )
+
+        # print("Server IP:",  secrets.SERVER_IP)
+        # print("Port:", secrets.SERVER_PORT)
 
         # Networking
-        self.network_inst = NetworkingNode(
-            secrets.WIFI_SSID,
-            secrets.WIFI_PASSWORD,
-            secrets.SERVER_IP,
-            secrets.SERVER_PORT,
-        )
+        # self.network_inst = NetworkingNode(
+        #     secrets.WIFI_SSID,
+        #     secrets.WIFI_PASSWORD,
+        #     secrets.SERVER_IP,
+        #     secrets.SERVER_PORT,
+        # )
 
 
         # THE DIFFERENT MODES ARE PAUSE and RUNNING
-        self.task = self.cubeData.task
-        self.mode = self.cubeData.mode
-        self.stopWatchPresetTime = self.cubeData.stopWatchPresetTime
-        self.RGBW = self.cubeData.RGBW
-        self.animation_pattern = self.cubeData.animation_pattern
+        # self.task = self.cubeData.task
+        # self.mode = self.cubeData.mode
+        # self.stopWatchPresetTime = self.cubeData.stopWatchPresetTime
+        # self.RGBW = self.cubeData.RGBW
+        # self.animation_pattern = self.cubeData.animation_pattern
+
+    def on_lsm6dsl_int1(self, pin):
+        self.testNum += 1
+        print("Interrupt detected! Count:", self.testNum)
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
@@ -299,10 +315,37 @@ class CubeController:
                 press = 0
 
             time.sleep_ms(5)
+    def runLSM(self):
+        print("LSM6DSL running")
+        self.lsm6dsl.init()
 
+        while True:
+            # ax, ay, az = self.lsm6dsl.read_accel_mg()
+            # gx, gy, gz = self.lsm6dsl.read_gyro_mdps()
+
+            # print("AX=%0.1f AY=%0.1f AZ=%0.1f | GX=%0.1f GY=%0.1f GZ=%0.1f" %
+            #     (ax, ay, az, gx, gy, gz))
+
+            time.sleep_ms(200)
 def main():
     controller = CubeController()
-    controller.run()
+    controller.runLSM()
+    # controller.run()
+
+def test():
+    i2c = I2C(0, scl=Pin(7), sda=Pin(6))
+
+    print("Scanning I2C bus...")
+    devices = i2c.scan()
+
+    if not devices:
+        print("No I2C devices found")
+    else:
+        print("Found devices at addresses:")
+        for addr in devices:
+            print("0x%02x" % addr)
+
 
 if __name__ == "__main__":
     main()
+    # test()
