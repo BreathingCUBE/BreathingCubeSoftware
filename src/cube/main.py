@@ -8,6 +8,7 @@ from machine import ADC, I2C, Pin, PWM
 import secrets  # secrets.WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT
 import json
 
+from drivers.lp5814_ledDriver import LP5814
 from drivers.lp5811_ledDriver import LP5811
 from drivers.piezoElectric import PiezoButton
 from drivers.pomodoroTimer import PomodoroTimer
@@ -17,7 +18,6 @@ from drivers.batteryMeasurement import BatteryMeasurement
 from drivers.lsm6dsl import LSM6DSL
 from drivers.dataTransfer import DeviceSettings 
 
-
 import socket
 
 MODE_STOP   = 0
@@ -26,39 +26,46 @@ MODE_CONFIG  = 2
 MODE_ERROR   = 3
 
 
-OFFLINE_RGBW = [255,166,0,0] # default white color, can be changed by server config
-OFFLINE_PATTERN = [0x08, 0x08, 0x08, 0x08] # default animation pattern, can be changed by server config
+OFFLINE_RGBW = [0,0,255,0] # default white color, can be changed by server config
+OFFLINE_PATTERN = [0x0D, 0x0D, 0x0D, 0x0D] # 4 seconds per breathing stage
 
 
 class CubeController:
     def __init__(self):
-        # ---- Constants ----
-        self.LP5811_ADDR = 0x6D
 
         # ---- Hardware ----
         # self.onboard_led = Pin(2, Pin.OUT)
-        # I2C + LP5811
+        # I2C + LP5814
         self.i2c = I2C(0, scl=Pin(7), sda=Pin(6))
-        # self.lp = LP5811(self.i2c)
+        self.lp = LP5814(self.i2c, chip_addr=0x2C)
         self.lsm6dsl = LSM6DSL(self.i2c)  # Initialize the LSM6DSL instance
-        LSM6DSL_int1 = Pin(4, Pin.IN)
-
-        LSM6DSL_int1.irq(
-            trigger=Pin.IRQ_RISING,
-            handler=self.on_lsm6dsl_int1
-        )
-
         self.testNum = 0
+        self.lsm6dsl_irq_pending = False
+        # self.init_lp5814():
+            
         # Inputs
         # self.piezo = PiezoButton(pin=0) # This is now a MOSFET so it will not really work
-        # self.alarm = Alarm(speaker_pin=10)
 
-        # self.cubeData = DeviceSettings()
+        self.alarm = Alarm(speaker_pin=10)
+
+        self.cubeData = DeviceSettings()
         # Timer (callbacks point to controller methods)
-        # self.timer = PomodoroTimer(
-        #     on_session_complete=self.on_session_complete,
-        #     on_reminder=self.on_reminder,
-        # )
+        self.timer = PomodoroTimer(
+            on_session_complete=self.on_session_complete,
+            on_reminder=self.on_reminder,
+        )
+
+        self.isUsb = Pin(21, Pin.IN)
+        self.usb_irq_pending = False
+        # This input is active-low: 0 means USB VBUS is present.
+        self.usb_power_present = self.isUsb.value() == 0
+        print("USB VBUS present:", self.usb_power_present)
+
+        self.isUsb.irq(
+            trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
+            handler=self.on_usb_sense_irq,
+        )
+
 
         # print("Server IP:",  secrets.SERVER_IP)
         # print("Port:", secrets.SERVER_PORT)
@@ -74,14 +81,61 @@ class CubeController:
 
         # THE DIFFERENT MODES ARE PAUSE and RUNNING
         # self.task = self.cubeData.task
-        # self.mode = self.cubeData.mode
-        # self.stopWatchPresetTime = self.cubeData.stopWatchPresetTime
-        # self.RGBW = self.cubeData.RGBW
-        # self.animation_pattern = self.cubeData.animation_pattern
+        self.mode = "STOP" # believe will need to get deleted
+        self.stopWatchPresetTime = self.cubeData.stopWatchPresetTime
+        self.RGBW = self.lp.normalize_rgbw(self.cubeData.RGBW)
+        self.animation_pattern = self.cubeData.animation_pattern
+        print("Loaded RGBW [R, G, B, W]:", self.RGBW)
+        self.lsm6dsl_int1 = Pin(4, Pin.IN)
+        self.lsm6dsl_int1.irq(
+            trigger=Pin.IRQ_RISING,
+            handler=self.on_lsm6dsl_int1
+        )
 
+   
     def on_lsm6dsl_int1(self, pin):
+        # IRQ callbacks should only set a flag; do not print or use I2C here.
+        self.lsm6dsl_irq_pending = True
+
+    def on_usb_sense_irq(self, pin):
+        self.usb_irq_pending = True
+
+
+    def process_usb_sense(self):
+        if not self.usb_irq_pending:
+            return
+
+        self.usb_irq_pending = False
+        present = self.isUsb.value() == 0
+
+        if present != self.usb_power_present:
+            self.usb_power_present = present
+            print("USB VBUS connected" if present else "USB VBUS disconnected")
+
+    def process_lsm6dsl_interrupt(self):
+        if not self.lsm6dsl_irq_pending:
+            return
+
+        self.lsm6dsl_irq_pending = False
         self.testNum += 1
         print("Interrupt detected! Count:", self.testNum)
+        if self.mode == "RUNNING":
+            self.lp.stop_cmd()
+            self.timer.pause()
+            self.mode = "STOP"
+
+        elif self.mode == "STOP":
+            print("Starting timer for", self.stopWatchPresetTime, "seconds")
+            self.timer.set_time(self.stopWatchPresetTime)
+            self.timer.start()
+            self.lp.init_auto()
+            # print("Starting breathing with RGBW [R, G, B, W]:", self.RGBW)
+            self.lp.led_all_breathing(
+                RGBW=self.RGBW,
+                duration_ms=self.animation_pattern
+            )
+            self.mode = "RUNNING"
+            self.lp.start_cmd()
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
@@ -176,6 +230,13 @@ class CubeController:
             print("Apply error:", e)
             return False
         
+
+    def init_lp5814(self) -> bool:
+        if not self.lp.ping():
+            print("LP5814 not detected (NACK)")
+            return False
+        print("LP5814 detected (ACK)")
+        return True        
     # ---------- Setup ----------
     def init_lp5811(self) -> bool:
         if not self.lp.ping():
@@ -287,7 +348,6 @@ class CubeController:
             # self.network_inst.connected = False
             self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
             self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config 
-
     def toggle_mode(self):
         if self.mode == MODE_STOP:
             self.mode = MODE_RUNNING
@@ -298,28 +358,30 @@ class CubeController:
     # ---------- Main loop ----------
     def run(self):
         print("main.py running")
-
-        if not self.init_lp5811():
-            return
-
-        self.init_network()
-
+        # self.init_network()
+        self.lsm6dsl.init()
+        self.lp.stop_cmd()  # Ensure LEDs are off before starting
         while True:
             self.timer.process() 
-            press = self.piezo.buttonPress()
-            if press == 1:
-                self.handle_single_tap()
-                press = 0
-            elif press == 2:
-                self.handle_double_tap()
-                press = 0
+            self.process_usb_sense()
+            self.process_lsm6dsl_interrupt()
+            # press = self.piezo.buttonPress()
+            # if press == 1:
+            #     self.handle_single_tap()
+            #     press = 0
+            # elif press == 2:
+            #     self.handle_double_tap()
+            #     press = 0
 
             time.sleep_ms(5)
     def runLSM(self):
         print("LSM6DSL running")
         self.lsm6dsl.init()
-
+        self.lp.stop_cmd()  # Ensure LEDs are off before starting
         while True:
+            self.timer.process()
+            self.process_usb_sense()
+            self.process_lsm6dsl_interrupt()
             # ax, ay, az = self.lsm6dsl.read_accel_mg()
             # gx, gy, gz = self.lsm6dsl.read_gyro_mdps()
 
@@ -329,8 +391,7 @@ class CubeController:
             time.sleep_ms(200)
 def main():
     controller = CubeController()
-    controller.runLSM()
-    # controller.run()
+    controller.run()
 
 def test():
     i2c = I2C(0, scl=Pin(7), sda=Pin(6))

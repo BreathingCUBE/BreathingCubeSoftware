@@ -21,7 +21,7 @@ class Alarm:
     - No timing logic (external controller decides WHEN)
     """
 
-    def __init__(self, speaker_pin=18, freq=1000):
+    def __init__(self, speaker_pin=18, freq=4000):
         self.speaker = PWM(Pin(speaker_pin))
         self.speaker.freq(freq)
         self.speaker.duty_u16(0)  # silent by default
@@ -63,19 +63,21 @@ class Alarm:
             sleep_ms(600)
 
 
-    def bell(self):
+    def bell(self, frequency=4000, duration_ms=1000, repeats=4,
+             pause_ms=150, duty=32768):
+        """Play four 1-second bursts at the piezo's tested 4 kHz resonance."""
+        if frequency <= 0 or duration_ms <= 0 or repeats < 1 or pause_ms < 0:
+            raise ValueError("Invalid bell timing or frequency")
+        if not 0 < duty <= 65535:
+            raise ValueError("duty must be from 1 to 65535")
 
-        self.speaker.freq(250)
-
-        duty = 40000          # initial amplitude
-        decay = 0.9          # exponential decay factor (smaller = faster fade)
-
-        self._on(duty)
-        sleep_ms(60)         # soft strike
-
-        while duty > 2000:
-            duty = int(duty * decay)
-            self.speaker.duty_u16(duty)
-            sleep_ms(10)
-
-        self._off()
+        self.speaker.freq(frequency)
+        try:
+            for burst in range(repeats):
+                self.speaker.duty_u16(duty)
+                sleep_ms(duration_ms)
+                self._off()
+                if burst < repeats - 1:
+                    sleep_ms(pause_ms)
+        finally:
+            self._off()

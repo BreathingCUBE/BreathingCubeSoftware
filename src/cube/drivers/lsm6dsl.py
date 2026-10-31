@@ -102,6 +102,24 @@ class LSM6DSL:
     def read_regs(self, reg, length):
         return self.i2c.readfrom_mem(self.addr, reg, length)
 
+    def enableZTapINT1_init(self):
+        # Disable INT1 event routing during setup.
+        self.write_reg(0x5E, 0x00)
+
+        # Active-high, push-pull; preserve BDU and auto-increment.
+        self.write_reg(0x12, self.read_reg(0x12) & ~0x30)
+
+        # Accelerometer high-performance mode.
+        self.write_reg(0x15, self.read_reg(0x15) & ~0x10)
+
+        self.write_reg(0x10, 0x60)  # Accelerometer: 416 Hz, +/-2 g
+        self.write_reg(0x58, 0x82)  # Interrupts enabled, Z taps only, no latch
+        self.write_reg(0x59, 0x09)  # Tap threshold: 0.5625 g
+        self.write_reg(0x5A, 0x06)  # Shock and quiet timing
+        self.write_reg(0x5B, 0x00)  # Single-tap mode
+
+        self.write_reg(0x5E, 0x40)  # Route single-tap interrupt to INT1
+
 
     def enableThresholdINT1_init(self):
         # Standalone motion test: replaces the previous IMU tap configuration.
@@ -109,7 +127,7 @@ class LSM6DSL:
         self.write_reg(0x12, self.read_reg(0x12) & ~0x30)  # Active-high, push-pull
         self.write_reg(0x15, self.read_reg(0x15) & ~0x10)  # Accelerometer high-performance
 
-        self.write_reg(0x10, 0x40)
+        # self.write_reg(0x10, 0x40)
         self.write_reg(0x58, 0x90)
         self.write_reg(0x5B, 0x02)
         self.write_reg(0x5C, 0x60)
@@ -152,8 +170,8 @@ class LSM6DSL:
             full_scale=self.G_FS_245DPS
         )
 
-        self.enableThresholdINT1_init()
-
+        # self.enableThresholdINT1_init()
+        self.enableZTapINT1_init()
         time.sleep_ms(100)
 
     def accel_init(self, odr=XL_ODR_104HZ, full_scale=XL_FS_2G):

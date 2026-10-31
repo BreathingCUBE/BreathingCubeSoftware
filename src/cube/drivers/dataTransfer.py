@@ -5,11 +5,47 @@ SETTINGS_FILE = "settings.json"
 SETTINGS = {
     "task": "Nothing",
     "mode": "RUNNING",
-    "stopWatchPresetTime": 20 * 60,
-    "RGBW": "#FFFFFF",
-    "animation_pattern":  [0x08, 0x08, 0x08, 0x08] ,
+    # "stopWatchPresetTime": 20 * 60,
+    "stopWatchPresetTime": 10, # 10seconds just to test
+    "RGBW": [0,0,0, 255],
+    # LP5814 stages: rise, high hold, fall, low hold; code 13 = 4 seconds.
+    "animation_pattern": [0x0D, 0x0D, 0x0D, 0x0D],
     "alarm_type": "nothing"
 }
+
+
+def overwrite_animation_pattern(pattern=None):
+    """Sync source color, session duration, and breathing timing to the board."""
+    if pattern is None:
+        pattern = list(SETTINGS["animation_pattern"])
+    if not isinstance(pattern, (list, tuple)) or len(pattern) != 4:
+        raise ValueError("animation_pattern must contain four timing codes")
+    if any(not isinstance(value, int) or value < 0 or value > 15 for value in pattern):
+        raise ValueError("animation timing codes must be integers from 0 to 15")
+
+    rgbw = SETTINGS["RGBW"]
+    if not isinstance(rgbw, (list, tuple)) or len(rgbw) != 4:
+        raise ValueError("default RGBW must contain four channel values")
+    if any(not isinstance(value, int) or value < 0 or value > 255 for value in rgbw):
+        raise ValueError("RGBW channel values must be integers from 0 to 255")
+
+    try:
+        with open(SETTINGS_FILE, "r") as settings_file:
+            settings = json.load(settings_file)
+        if not isinstance(settings, dict):
+            settings = dict(SETTINGS)
+    except (OSError, ValueError):
+        settings = dict(SETTINGS)
+
+    settings["RGBW"] = list(rgbw)
+    settings["stopWatchPresetTime"] = SETTINGS["stopWatchPresetTime"]
+    settings["animation_pattern"] = list(pattern)
+    with open(SETTINGS_FILE, "w") as settings_file:
+        json.dump(settings, settings_file)
+    print("Saved RGBW:", settings["RGBW"])
+    print("Saved stopWatchPresetTime:", settings["stopWatchPresetTime"])
+    print("Saved animation_pattern:", settings["animation_pattern"])
+
 '''
 
 1: Upload: Finished!!
