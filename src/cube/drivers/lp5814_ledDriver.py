@@ -175,6 +175,17 @@ class LP5814:
         for channel, value in enumerate((w, b, g, r)):
             self.set_pwm(channel, value)
 
+    def blink_green(self, duration_ms=1000):
+        """Show full green for duration_ms, then turn all outputs off."""
+        if not isinstance(duration_ms, int) or duration_ms <= 0:
+            raise ValueError('duration_ms must be a positive integer')
+        self.init_manual(initial_pwm=0)
+        self.set_rgbw([0, 255, 0, 0])
+        try:
+            time.sleep_ms(duration_ms)
+        finally:
+            self.set_rgbw([0, 0, 0, 0])
+
     def fade_leds_manual(self, target_rgb, duration_ms, steps=64):
         """Blocking software fade in physical [W,B,G,R] order, manual mode only."""
         target = _four(target_rgb, 255, 'target_rgb')
@@ -280,9 +291,17 @@ class LP5814:
         return _four(values, 255, 'RGBW')
 
     def success_animation(self):
+        print("Success animation")
         self.init_auto()
         self.led_all_breathing([0, 255, 0, 0], [2, 3, 4, 5], 1)
         self.start_cmd()
+
+    def connected_animation(self):
+        print("USB Connected ")
+        self.init_auto()
+        self.led_all_breathing([127, 0, 255, 0], [2, 3, 4, 5], 1)
+        self.start_cmd()
+
 
     def fail_animation(self):
         self.init_auto()

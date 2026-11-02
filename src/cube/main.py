@@ -5,6 +5,7 @@
 
 import time
 from machine import ADC, I2C, Pin, PWM
+from time import sleep_ms
 import secrets  # secrets.WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT
 import json
 
@@ -98,6 +99,7 @@ class CubeController:
         self.lsm6dsl_irq_pending = True
 
     def on_usb_sense_irq(self, pin):
+        # self.lp.connected_animation()
         self.usb_irq_pending = True
 
 
@@ -107,11 +109,12 @@ class CubeController:
 
         self.usb_irq_pending = False
         present = self.isUsb.value() == 0
-
+        self.lp.connected_animation()
         if present != self.usb_power_present:
             self.usb_power_present = present
             print("USB VBUS connected" if present else "USB VBUS disconnected")
-
+            self.lp.connected_animation() if present else self.lp.fail_animation()
+            sleep_ms(500)
     def process_lsm6dsl_interrupt(self):
         if not self.lsm6dsl_irq_pending:
             return
@@ -119,6 +122,9 @@ class CubeController:
         self.lsm6dsl_irq_pending = False
         self.testNum += 1
         print("Interrupt detected! Count:", self.testNum)
+        # self.lp.success_animation()
+        # self.lp.connected_animation()
+        sleep_ms(500)
         if self.mode == "RUNNING":
             self.lp.stop_cmd()
             self.timer.pause()
