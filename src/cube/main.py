@@ -42,7 +42,7 @@ class CubeController:
         self.lsm6dsl = LSM6DSL(self.i2c)  # Initialize the LSM6DSL instance
         self.testNum = 0
         self.lsm6dsl_irq_pending = False
-        # self.init_lp5814():
+        self.init_lp5814():
             
         # Inputs
         # self.piezo = PiezoButton(pin=0) # This is now a MOSFET so it will not really work
@@ -88,10 +88,10 @@ class CubeController:
         self.animation_pattern = self.cubeData.animation_pattern
         print("Loaded RGBW [R, G, B, W]:", self.RGBW)
         self.lsm6dsl_int1 = Pin(4, Pin.IN)
-        self.lsm6dsl_int1.irq(
-            trigger=Pin.IRQ_RISING,
-            handler=self.on_lsm6dsl_int1
-        )
+        # self.lsm6dsl_int1.irq(
+        #     trigger=Pin.IRQ_RISING,
+        #     handler=self.on_lsm6dsl_int1
+        # )
 
    
     def on_lsm6dsl_int1(self, pin):
