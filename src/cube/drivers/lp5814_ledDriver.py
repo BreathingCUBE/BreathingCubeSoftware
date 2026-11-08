@@ -302,6 +302,19 @@ class LP5814:
         self.led_all_breathing([127, 0, 255, 0], [2, 3, 4, 5], 1)
         self.start_cmd()
 
+    def blink_animation(self, RGBW, duration_ms=350):
+        """Show a caller-provided [R,G,B,W] color briefly, then turn LEDs off."""
+        if not isinstance(duration_ms, int) or duration_ms <= 0:
+            raise ValueError('duration_ms must be a positive integer')
+        color = self.normalize_rgbw(RGBW)
+        print("LED feedback", color)
+        self.init_manual(initial_pwm=0)
+        try:
+            self.set_rgbw(color)
+            time.sleep_ms(duration_ms)
+        finally:
+            self.set_rgbw([0, 0, 0, 0])
+
 
     def fail_animation(self):
         self.init_auto()

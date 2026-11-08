@@ -13,9 +13,18 @@ class LSM6DSL:
     CTRL2_G = 0x11
     CTRL3_C = 0x12
     STATUS_REG = 0x1E
+    TAP_SRC = 0x1C
 
     OUTX_L_G = 0x22
     OUTX_L_XL = 0x28
+
+    TAP_CFG = 0x58
+    TAP_THS_6D = 0x59
+    INT_DUR2 = 0x5A
+    WAKE_UP_THS = 0x5B
+    MD1_CFG = 0x5E
+    TAP_SRC_SINGLE_TAP = 0x20
+    INT1_SINGLE_TAP = 0x40
 
     # Expected WHO_AM_I value for LSM6DSL
     WHO_AM_I_VALUE = 0x6A
@@ -102,24 +111,31 @@ class LSM6DSL:
     def read_regs(self, reg, length):
         return self.i2c.readfrom_mem(self.addr, reg, length)
 
-    def enableZTapINT1_init(self):
-        # Disable INT1 event routing during setup.
-        self.write_reg(0x5E, 0x00)
+    def enable_single_tap_int1(self):
+        """Enable Z-axis single taps and route each tap to INT1.
+
+        The application can combine two single-tap events into a double tap
+        using a software time window.
+        """
+        self.write_reg(self.MD1_CFG, 0x00)  # Disable routing while configuring.
 
         # Active-high, push-pull; preserve BDU and auto-increment.
-        self.write_reg(0x12, self.read_reg(0x12) & ~0x30)
+        self.write_reg(self.CTRL3_C, self.read_reg(self.CTRL3_C) & ~0x30)
 
         # Accelerometer high-performance mode.
         self.write_reg(0x15, self.read_reg(0x15) & ~0x10)
 
-        self.write_reg(0x10, 0x60)  # Accelerometer: 416 Hz, +/-2 g
-        self.write_reg(0x58, 0x82)  # Interrupts enabled, Z taps only, no latch
-        self.write_reg(0x59, 0x09)  # Tap threshold: 0.5625 g
-        self.write_reg(0x5A, 0x06)  # Shock and quiet timing
-        self.write_reg(0x5B, 0x00)  # Single-tap mode
+        self.write_reg(self.CTRL1_XL, 0x60)  # 416 Hz, +/-2 g
+        self.write_reg(self.TAP_CFG, 0x82)  # Tap interrupt enabled, Z axis only
+        self.write_reg(self.TAP_THS_6D, 0x09)  # Tap threshold
+        self.write_reg(self.INT_DUR2, 0x06)  # Shock and quiet timing
+        self.write_reg(self.WAKE_UP_THS, 0x00)  # Single-tap mode
 
-        self.write_reg(0x5E, 0x40)  # Route single-tap interrupt to INT1
+        self.write_reg(self.MD1_CFG, self.INT1_SINGLE_TAP)
 
+    def read_tap_source(self):
+        """Return the TAP_SRC flags for the most recent tap interrupt."""
+        return self.read_reg(self.TAP_SRC)
 
     def enableThresholdINT1_init(self):
         # Standalone motion test: replaces the previous IMU tap configuration.
@@ -171,7 +187,7 @@ class LSM6DSL:
         )
 
         # self.enableThresholdINT1_init()
-        self.enableZTapINT1_init()
+        self.enable_single_tap_int1()
         time.sleep_ms(100)
 
     def accel_init(self, odr=XL_ODR_104HZ, full_scale=XL_FS_2G):

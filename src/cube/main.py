@@ -18,7 +18,6 @@ from drivers.networkingNode import NetworkingNode  # adjust import to your actua
 from drivers.batteryMeasurement import BatteryMeasurement 
 from drivers.lsm6dsl import LSM6DSL
 from drivers.dataTransfer import DeviceSettings 
-
 import socket
 
 MODE_STOP   = 0
@@ -26,29 +25,26 @@ MODE_RUNNING = 1
 MODE_CONFIG  = 2
 MODE_ERROR   = 3
 
-
 OFFLINE_RGBW = [0,0,255,0] # default white color, can be changed by server config
 OFFLINE_PATTERN = [0x0D, 0x0D, 0x0D, 0x0D] # 4 seconds per breathing stage
-
 
 class CubeController:
     def __init__(self):
 
         # ---- Hardware ----
         # self.onboard_led = Pin(2, Pin.OUT)
-        # I2C + LP5814
+        # I2C + LP5814      
         self.i2c = I2C(0, scl=Pin(7), sda=Pin(6))
         self.lp = LP5814(self.i2c, chip_addr=0x2C)
         self.lsm6dsl = LSM6DSL(self.i2c)  # Initialize the LSM6DSL instance
         self.testNum = 0
         self.lsm6dsl_irq_pending = False
-        self.init_lp5814():
-            
+        self.init_lp5814()
+        
         # Inputs
         # self.piezo = PiezoButton(pin=0) # This is now a MOSFET so it will not really work
 
         self.alarm = Alarm(speaker_pin=10)
-
         self.cubeData = DeviceSettings()
         # Timer (callbacks point to controller methods)
         self.timer = PomodoroTimer(
@@ -66,8 +62,6 @@ class CubeController:
             trigger=Pin.IRQ_RISING | Pin.IRQ_FALLING,
             handler=self.on_usb_sense_irq,
         )
-
-
         # print("Server IP:",  secrets.SERVER_IP)
         # print("Port:", secrets.SERVER_PORT)
 
@@ -79,7 +73,6 @@ class CubeController:
         #     secrets.SERVER_PORT,
         # )
 
-
         # THE DIFFERENT MODES ARE PAUSE and RUNNING
         # self.task = self.cubeData.task
         self.mode = "STOP" # believe will need to get deleted
@@ -88,12 +81,11 @@ class CubeController:
         self.animation_pattern = self.cubeData.animation_pattern
         print("Loaded RGBW [R, G, B, W]:", self.RGBW)
         self.lsm6dsl_int1 = Pin(4, Pin.IN)
-        # self.lsm6dsl_int1.irq(
-        #     trigger=Pin.IRQ_RISING,
-        #     handler=self.on_lsm6dsl_int1
-        # )
+        self.lsm6dsl_int1.irq(
+            trigger=Pin.IRQ_RISING,
+            handler=self.on_lsm6dsl_int1
+        )
 
-   
     def on_lsm6dsl_int1(self, pin):
         # IRQ callbacks should only set a flag; do not print or use I2C here.
         self.lsm6dsl_irq_pending = True
@@ -115,20 +107,15 @@ class CubeController:
             print("USB VBUS connected" if present else "USB VBUS disconnected")
             self.lp.connected_animation() if present else self.lp.fail_animation()
             sleep_ms(500)
-    def process_lsm6dsl_interrupt(self):
-        if not self.lsm6dsl_irq_pending:
-            return
-
-        self.lsm6dsl_irq_pending = False
-        self.testNum += 1
-        print("Interrupt detected! Count:", self.testNum)
-        # self.lp.success_animation()
-        # self.lp.connected_animation()
-        sleep_ms(500)
+    def handle_single_tap(self):
+        """Blink blue once and toggle the session for each recognized tap."""
+        print("Handling single tap")
+        self.lp.blink_animation([0, 0, 255, 0], duration_ms=700)
         if self.mode == "RUNNING":
             self.lp.stop_cmd()
             self.timer.pause()
             self.mode = "STOP"
+            print("Session stopped")
 
         elif self.mode == "STOP":
             print("Starting timer for", self.stopWatchPresetTime, "seconds")
@@ -142,6 +129,23 @@ class CubeController:
             )
             self.mode = "RUNNING"
             self.lp.start_cmd()
+        else:
+            print("Ignoring tap while mode is", self.mode)
+
+    def process_tap_events(self):
+        """Immediately handle each single-tap interrupt; no double-tap delay."""
+        if not self.lsm6dsl_irq_pending:
+            return
+
+        self.lsm6dsl_irq_pending = False
+        tap_source = self.lsm6dsl.read_tap_source()
+        print("TAP_SRC = 0x%02X" % tap_source)
+        if tap_source & self.lsm6dsl.TAP_SRC_SINGLE_TAP:
+            self.testNum += 1
+            print("Single tap event:", self.testNum)
+            self.handle_single_tap()
+        else:
+            print("Interrupt was not identified as a single tap")
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
@@ -164,18 +168,6 @@ class CubeController:
     # The way we should apply it is. We should most def be uploading that data onto the cube JSON file
     def upload_configSettings(self, payload):
         errors = []
-
-        # --- timing_pattern ---
-        # pattern = payload.get("timing_pattern")
-        # Pattern to be added in future iterations, currently set to default pattern.
-        # if not isinstance(pattern, list):
-        #     errors.append("timing_pattern must be a list")
-        # else:
-        #     if len(pattern) != 4:
-        #         errors.append("timing_pattern must have exactly 4 elements")
-
-        #     if not all(isinstance(x, int) and 1 <= x <= 15 for x in pattern):
-        #         errors.append("timing_pattern values must be integers 1–15")
 
         # --- task_name ---
         if not isinstance(payload.get("task_name"), str) or not payload.get("task_name"):
@@ -201,9 +193,6 @@ class CubeController:
         if not isinstance(payload.get("task_time"), int) or payload.get("task_time") <= 0:
             errors.append("task_time must be a positive integer")
 
-        # --- alarm_type --- to be added
-        # if not isinstance(payload.get("alarm_type"), str) or not payload.get("alarm_type"):
-        #     errors.append("alarm_type must be a non-empty string")
 
         # IF ERRORS → STOP
         if errors:
@@ -289,71 +278,6 @@ class CubeController:
             self.controller_error_animation()
             return False
 
-    # ---------- Upon single tap, will toggle mode and send respective commands to server----------
-    def handle_single_tap(self):
-        self.toggle_mode()
-        action = "stop" if self.mode == MODE_RUNNING else "start"
-        json_payload = {
-            "task": self.task,
-            "action": action,
-            "elapsed_seconds": int(self.timer.session_elapsed_ms / 1000)  # convert ms to seconds
-        }
-
-        # Send REST command at end so it does not stop animation. 
-
-        print("RX: ", json_payload)
-        if(self.network_inst.connected == False):   
-            success = None
-        else:
-            print("mode: " + str(self.mode))
-            success = self.network_inst.send_command(json_payload)
-        if success is not None:
-
-            print("RECEIVED", success)
-            self.network_inst.connected = True
-        else: 
-            print(str(self.mode) + " Command failed to send, entering disconnection mode")
-            self.network_inst.connected = False
-            self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
-            self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config 
-
-        if self.mode == MODE_RUNNING:# then STOP
-            self.lp.stop_cmd()
-            self.timer.pause()
-
-        elif self.mode == MODE_STOP: # then START
-            self.timer.set_time(self.stopWatchPresetTime)
-            self.timer.start()
-            self.lp.init_auto()
-            self.lp.led_all_breathing(
-                RGBW=self.RGBW,
-                duration_ms=self.animation_pattern
-            )
-            self.lp.start_cmd()
-
-    def handle_double_tap(self):
-        # Send REST command
-        self.mode = MODE_STOP
-        self.toggle_mode()
-        self.lp.stop_cmd()
-        self.timer.pause()
-        # JSON payload upon reset
-        # Cube:{
-        #     "task": "Meditation",      
-        #     "action": "reset"
-        # }
-        json_payload = {
-            "task": self.task,
-            "action": "reset",
-        }
-
-        if self.init_network() == True:
-            print("Network is connected ")
-        else:
-            print(str(self.mode) + " Command failed to send, entering disconnection mode")
-            # self.network_inst.connected = False
-            self.RGBW = OFFLINE_RGBW # default white color, can be changed by server config
-            self.animation_pattern = OFFLINE_PATTERN # default animation pattern, can be changed by server config 
     def toggle_mode(self):
         if self.mode == MODE_STOP:
             self.mode = MODE_RUNNING
@@ -370,14 +294,7 @@ class CubeController:
         while True:
             self.timer.process() 
             self.process_usb_sense()
-            self.process_lsm6dsl_interrupt()
-            # press = self.piezo.buttonPress()
-            # if press == 1:
-            #     self.handle_single_tap()
-            #     press = 0
-            # elif press == 2:
-            #     self.handle_double_tap()
-            #     press = 0
+            self.process_tap_events()
 
             time.sleep_ms(5)
     def runLSM(self):
@@ -387,7 +304,7 @@ class CubeController:
         while True:
             self.timer.process()
             self.process_usb_sense()
-            self.process_lsm6dsl_interrupt()
+            self.process_tap_events()
             # ax, ay, az = self.lsm6dsl.read_accel_mg()
             # gx, gy, gz = self.lsm6dsl.read_gyro_mdps()
 
