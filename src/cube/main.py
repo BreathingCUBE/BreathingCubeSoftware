@@ -110,8 +110,13 @@ class CubeController:
     def handle_single_tap(self):
         """Blink blue once and toggle the session for each recognized tap."""
         print("Handling single tap")
-        self.lp.blink_animation([0, 0, 255, 0], duration_ms=700)
+        # self.lp.blink_animation([0, 0, 255, 0], duration_ms=700)
+        # self.lp.connected_animation()
+        # self.lp.blink_animation([0, 0, 255, 0])
+        # sleep_ms(1000)
         if self.mode == "RUNNING":
+            self.lp.blink_animation([255, 0, 0, 0])
+            sleep_ms(500)
             self.lp.stop_cmd()
             self.timer.pause()
             self.mode = "STOP"
@@ -119,6 +124,8 @@ class CubeController:
 
         elif self.mode == "STOP":
             print("Starting timer for", self.stopWatchPresetTime, "seconds")
+            self.lp.blink_animation([0, 0, 255, 0])
+            sleep_ms(500)
             self.timer.set_time(self.stopWatchPresetTime)
             self.timer.start()
             self.lp.init_auto()
@@ -295,8 +302,8 @@ class CubeController:
             self.timer.process() 
             self.process_usb_sense()
             self.process_tap_events()
-
             time.sleep_ms(5)
+
     def runLSM(self):
         print("LSM6DSL running")
         self.lsm6dsl.init()
@@ -310,8 +317,8 @@ class CubeController:
 
             # print("AX=%0.1f AY=%0.1f AZ=%0.1f | GX=%0.1f GY=%0.1f GZ=%0.1f" %
             #     (ax, ay, az, gx, gy, gz))
-
             time.sleep_ms(200)
+
 def main():
     controller = CubeController()
     controller.run()

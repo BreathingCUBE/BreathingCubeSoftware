@@ -6,7 +6,7 @@ SETTINGS = {
     "task": "Nothing",
     "mode": "RUNNING",
     # "stopWatchPresetTime": 20 * 60,
-    "stopWatchPresetTime": 10, # 10seconds just to test
+    "stopWatchPresetTime": 60 * 60,  # 1 hour; adjust for testing as needed.
     "RGBW": [0,0,0, 255],
     # LP5814 stages: rise, high hold, fall, low hold; code 13 = 4 seconds.
     "animation_pattern": [0x0D, 0x0D, 0x0D, 0x0D],
