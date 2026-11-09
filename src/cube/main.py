@@ -136,49 +136,45 @@ class CubeController:
             print("Ignoring tap while mode is", self.mode)
 
     def process_tap_events(self):
-        """Handle individual tap events and combine quick pairs into double taps."""
+        """Recognize a software double tap from two IMU single-tap events."""
         now = time.ticks_ms()
 
-        # Finalize the first tap before handling any newer interrupt. This
-        # keeps timeout handling in one place and avoids duplicate branches.
+        if self.lsm6dsl_irq_pending:
+            self.lsm6dsl_irq_pending = False
+            tap_source = self.lsm6dsl.read_tap_source()
+            print("TAP_SRC = 0x%02X" % tap_source)
+
+            if tap_source & self.lsm6dsl.TAP_SRC_SINGLE_TAP:# bit mask for single tap
+                self.testNum += 1
+                print("Single tap event:", self.testNum)
+
+                if self.tap_waiting_for_second: #Boolean to check if we are waiting for a second tap
+                    elapsed = time.ticks_diff(now, self.first_tap_ms)
+                    if elapsed <= DOUBLE_TAP_WINDOW_MS and self.mode == "STOP": # if we are within the double-tap window, handle the double tap
+                        self.tap_waiting_for_second = False
+                        self.handle_double_tap()
+                        return
+
+                # The previous tap timed out; apply it as a single tap.
+                    self.tap_waiting_for_second = False
+                    self.handle_single_tap()
+
+                # Give immediate feedback on the first tap while waiting to
+                # determine whether another tap follows within the window.
+                if self.mode == "RUNNING":
+                    self.lp.blink_animation([200, 0, 0, 0])
+                elif self.mode == "STOP":
+                    self.lp.blink_animation([0, 200, 0, 0])
+                self.tap_waiting_for_second = True
+                self.first_tap_ms = now
+            else:
+                print("Interrupt was not identified as a single tap")
+
+        #Once second tap window has expired, handle the first tap as a single tap.
         if (self.tap_waiting_for_second and
                 time.ticks_diff(now, self.first_tap_ms) >= DOUBLE_TAP_WINDOW_MS):
             self.tap_waiting_for_second = False
             self.handle_single_tap()
-
-        # No new sensor interrupt is pending; timeout handling above is all
-        # that needs to happen on this pass through the main loop.
-        if not self.lsm6dsl_irq_pending:
-            return
-
-        self.lsm6dsl_irq_pending = False
-        tap_source = self.lsm6dsl.read_tap_source()
-        print("TAP_SRC = 0x%02X" % tap_source)
-
-        # Ignore interrupts that do not contain the IMU's single-tap flag.
-        if not tap_source & self.lsm6dsl.TAP_SRC_SINGLE_TAP:
-            print("Interrupt was not identified as a single tap")
-            return
-
-        self.testNum += 1
-        print("Single tap event:", self.testNum)
-
-        # If a first tap is still pending, this event is within its time window.
-        if self.tap_waiting_for_second:
-            self.tap_waiting_for_second = False
-            if self.mode == "STOP":
-                self.handle_double_tap()
-                return
-
-        # This tap starts a new double-tap window. Give feedback immediately,
-        # while delaying the single-tap action until the window expires.
-        if self.mode == "RUNNING":
-            self.lp.blink_animation([200, 0, 0, 0])
-        elif self.mode == "STOP":
-            self.lp.blink_animation([0, 200, 0, 0])
-
-        self.tap_waiting_for_second = True
-        self.first_tap_ms = time.ticks_ms()
 
     def handle_double_tap(self):
         """Reset the session after two single-tap events within the time window."""
