@@ -27,6 +27,7 @@ MODE_ERROR   = 3
 
 OFFLINE_RGBW = [0,0,255,0] # default white color, can be changed by server config
 OFFLINE_PATTERN = [0x0D, 0x0D, 0x0D, 0x0D] # 4 seconds per breathing stage
+DOUBLE_TAP_WINDOW_MS = 400
 
 class CubeController:
     def __init__(self):
@@ -39,6 +40,8 @@ class CubeController:
         self.lsm6dsl = LSM6DSL(self.i2c)  # Initialize the LSM6DSL instance
         self.testNum = 0
         self.lsm6dsl_irq_pending = False
+        self.tap_waiting_for_second = False
+        self.first_tap_ms = 0
         self.init_lp5814()
         
         # Inputs
@@ -107,16 +110,11 @@ class CubeController:
             print("USB VBUS connected" if present else "USB VBUS disconnected")
             self.lp.connected_animation() if present else self.lp.fail_animation()
             sleep_ms(500)
+            
     def handle_single_tap(self):
-        """Blink blue once and toggle the session for each recognized tap."""
+        """Apply the start/stop action after the tap window expires."""
         print("Handling single tap")
-        # self.lp.blink_animation([0, 0, 255, 0], duration_ms=700)
-        # self.lp.connected_animation()
-        # self.lp.blink_animation([0, 0, 255, 0])
-        # sleep_ms(1000)
         if self.mode == "RUNNING":
-            self.lp.blink_animation([255, 0, 0, 0])
-            sleep_ms(500)
             self.lp.stop_cmd()
             self.timer.pause()
             self.mode = "STOP"
@@ -124,8 +122,6 @@ class CubeController:
 
         elif self.mode == "STOP":
             print("Starting timer for", self.stopWatchPresetTime, "seconds")
-            self.lp.blink_animation([0, 0, 255, 0])
-            sleep_ms(500)
             self.timer.set_time(self.stopWatchPresetTime)
             self.timer.start()
             self.lp.init_auto()
@@ -140,19 +136,58 @@ class CubeController:
             print("Ignoring tap while mode is", self.mode)
 
     def process_tap_events(self):
-        """Immediately handle each single-tap interrupt; no double-tap delay."""
+        """Handle individual tap events and combine quick pairs into double taps."""
+        now = time.ticks_ms()
+
+        # Finalize the first tap before handling any newer interrupt. This
+        # keeps timeout handling in one place and avoids duplicate branches.
+        if (self.tap_waiting_for_second and
+                time.ticks_diff(now, self.first_tap_ms) >= DOUBLE_TAP_WINDOW_MS):
+            self.tap_waiting_for_second = False
+            self.handle_single_tap()
+
+        # No new sensor interrupt is pending; timeout handling above is all
+        # that needs to happen on this pass through the main loop.
         if not self.lsm6dsl_irq_pending:
             return
 
         self.lsm6dsl_irq_pending = False
         tap_source = self.lsm6dsl.read_tap_source()
         print("TAP_SRC = 0x%02X" % tap_source)
-        if tap_source & self.lsm6dsl.TAP_SRC_SINGLE_TAP:
-            self.testNum += 1
-            print("Single tap event:", self.testNum)
-            self.handle_single_tap()
-        else:
+
+        # Ignore interrupts that do not contain the IMU's single-tap flag.
+        if not tap_source & self.lsm6dsl.TAP_SRC_SINGLE_TAP:
             print("Interrupt was not identified as a single tap")
+            return
+
+        self.testNum += 1
+        print("Single tap event:", self.testNum)
+
+        # If a first tap is still pending, this event is within its time window.
+        if self.tap_waiting_for_second:
+            self.tap_waiting_for_second = False
+            if self.mode == "STOP":
+                self.handle_double_tap()
+                return
+
+        # This tap starts a new double-tap window. Give feedback immediately,
+        # while delaying the single-tap action until the window expires.
+        if self.mode == "RUNNING":
+            self.lp.blink_animation([200, 0, 0, 0])
+        elif self.mode == "STOP":
+            self.lp.blink_animation([0, 200, 0, 0])
+
+        self.tap_waiting_for_second = True
+        self.first_tap_ms = time.ticks_ms()
+
+    def handle_double_tap(self):
+        """Reset the session after two single-tap events within the time window."""
+        print("Double tap detected; resetting session")
+        self.lp.stop_cmd()
+        self.timer.reset()
+        self.timer.set_time(self.stopWatchPresetTime)
+        self.mode = "STOP"
+        self.lp.blink_animation([0, 255, 0, 0])
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
@@ -161,6 +196,7 @@ class CubeController:
     def controller_error_animation(self):
         print("Error mode: flashing red")
         self.lp.fail_animation()
+        
     # ---------- Callbacks ----------
     def on_session_complete(self):
         print("Timer finished")
@@ -199,7 +235,6 @@ class CubeController:
         # --- task_time ---
         if not isinstance(payload.get("task_time"), int) or payload.get("task_time") <= 0:
             errors.append("task_time must be a positive integer")
-
 
         # IF ERRORS → STOP
         if errors:
