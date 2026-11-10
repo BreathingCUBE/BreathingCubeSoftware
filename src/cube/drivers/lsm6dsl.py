@@ -126,7 +126,9 @@ class LSM6DSL:
         self.write_reg(0x15, self.read_reg(0x15) & ~0x10)
 
         self.write_reg(self.CTRL1_XL, 0x60)  # 416 Hz, +/-2 g
-        self.write_reg(self.TAP_CFG, 0x82)  # Tap interrupt enabled, Z axis only
+        # Tap interrupt enabled, Z axis only, latched (LIR). INT1 stays high
+        # until TAP_SRC is read, so a tap during light sleep is not missed.
+        self.write_reg(self.TAP_CFG, 0x83)
         self.write_reg(self.TAP_THS_6D, 0x09)  # Tap threshold
         self.write_reg(self.INT_DUR2, 0x06)  # Shock and quiet timing
         self.write_reg(self.WAKE_UP_THS, 0x00)  # Single-tap mode
@@ -134,7 +136,10 @@ class LSM6DSL:
         self.write_reg(self.MD1_CFG, self.INT1_SINGLE_TAP)
 
     def read_tap_source(self):
-        """Return the TAP_SRC flags for the most recent tap interrupt."""
+        """Return the TAP_SRC flags for the most recent tap interrupt.
+
+        Reading TAP_SRC also clears the latched INT1 signal.
+        """
         return self.read_reg(self.TAP_SRC)
 
     def enableThresholdINT1_init(self):

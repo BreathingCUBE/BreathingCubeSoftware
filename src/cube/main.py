@@ -4,7 +4,7 @@
 # one button, one led, one timer, and a dream
 
 import time
-from machine import ADC, I2C, Pin, PWM
+from machine import ADC, I2C, Pin, PWM, lightsleep
 from time import sleep_ms
 import secrets  # secrets.WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT
 import json
@@ -29,8 +29,17 @@ OFFLINE_RGBW = [0,0,255,0] # default white color, can be changed by server confi
 OFFLINE_PATTERN = [0x0D, 0x0D, 0x0D, 0x0D] # 4 seconds per breathing stage
 DOUBLE_TAP_WINDOW_MS = 400
 
+# ---- Low power ----
+# Light sleep only runs on battery. While USB power is present the chip stays
+# awake, because light sleep shuts off the ESP32-C3's USB serial port and
+# mpremote/push.ps1 can no longer connect.
+LOW_POWER_ENABLED = True
+IDLE_SLEEP_MS = 100       # Longest single light sleep; also the tap/USB polling interval.
+BOOT_GRACE_MS = 5000      # Stay awake this long after boot so the board can always be reached.
+
 class CubeController:
     def __init__(self):
+        self.boot_ms = time.ticks_ms()
 
         # ---- Hardware ----
         # self.onboard_led = Pin(2, Pin.OUT)
@@ -139,8 +148,9 @@ class CubeController:
         """Recognize a software double tap from two IMU single-tap events."""
         now = time.ticks_ms()
 
+        #if an interrupt occurs, then do the following.
         if self.lsm6dsl_irq_pending:
-            self.lsm6dsl_irq_pending = False
+            self.lsm6dsl_irq_pending = False # reset interrupt so it can happen again
             tap_source = self.lsm6dsl.read_tap_source()
             print("TAP_SRC = 0x%02X" % tap_source)
 
@@ -155,16 +165,16 @@ class CubeController:
                         self.handle_double_tap()
                         return
 
-                # The previous tap timed out; apply it as a single tap.
+                    #blocks red light going on twice
                     self.tap_waiting_for_second = False
                     self.handle_single_tap()
 
                 # Give immediate feedback on the first tap while waiting to
                 # determine whether another tap follows within the window.
                 if self.mode == "RUNNING":
-                    self.lp.blink_animation([200, 0, 0, 0])
+                    self.lp.blink_animation([255, 0, 0, 0])
                 elif self.mode == "STOP":
-                    self.lp.blink_animation([0, 200, 0, 0])
+                    self.lp.blink_animation([0, 255, 0, 0])
                 self.tap_waiting_for_second = True
                 self.first_tap_ms = now
             else:
@@ -176,6 +186,56 @@ class CubeController:
             self.tap_waiting_for_second = False
             self.handle_single_tap()
 
+    # ---------- Low power ----------
+    def poll_wake_pins(self):
+        """Catch IMU taps and USB plug changes by reading pin levels.
+
+        Edge IRQs do not fire while the chip is in light sleep, so after each
+        sleep the pins are checked directly. INT1 is latched by the IMU, so a
+        tap during sleep is still high here until TAP_SRC is read.
+        """
+        if self.lsm6dsl_int1.value():
+            self.lsm6dsl_irq_pending = True
+        if (self.isUsb.value() == 0) != self.usb_power_present:
+            self.usb_irq_pending = True
+
+    def low_power_allowed(self):
+        if not LOW_POWER_ENABLED:
+            return False
+        if self.usb_power_present:
+            return False  # Keep the USB serial port alive for mpremote.
+        if time.ticks_diff(time.ticks_ms(), self.boot_ms) < BOOT_GRACE_MS:
+            return False
+        return True
+
+    def idle(self):
+        """Wait until the next loop pass, using light sleep when allowed."""
+        if self.lsm6dsl_irq_pending or self.usb_irq_pending:
+            return
+
+        if not self.low_power_allowed():
+            sleep_ms(10)
+            return
+
+        sleep_time = IDLE_SLEEP_MS
+
+        # Do not sleep past the software double-tap deadline.
+        if self.tap_waiting_for_second:
+            elapsed = time.ticks_diff(time.ticks_ms(), self.first_tap_ms)
+            remaining = DOUBLE_TAP_WINDOW_MS - elapsed
+            if remaining <= 0:
+                return
+            sleep_time = min(sleep_time, remaining)
+
+        # Do not sleep past the session end or a reminder.
+        next_event = self.timer.ms_until_next_event()
+        if next_event is not None:
+            if next_event <= 0:
+                return
+            sleep_time = min(sleep_time, next_event)
+
+        lightsleep(sleep_time)
+
     def handle_double_tap(self):
         """Reset the session after two single-tap events within the time window."""
         print("Double tap detected; resetting session")
@@ -183,7 +243,7 @@ class CubeController:
         self.timer.reset()
         self.timer.set_time(self.stopWatchPresetTime)
         self.mode = "STOP"
-        self.lp.blink_animation([0, 255, 0, 0])
+        self.lp.blink_animation([255, 255, 255, 255])
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
@@ -322,24 +382,26 @@ class CubeController:
         else:
             self.mode = MODE_STOP
 
-
     # ---------- Main loop ----------
     def run(self):
         print("main.py running")
         # self.init_network()
         self.lsm6dsl.init()
+        self.lsm6dsl.gyro_deinit()  # Gyro is unused; taps only need the accelerometer.
         self.lp.stop_cmd()  # Ensure LEDs are off before starting
         while True:
-            self.timer.process() 
+            self.poll_wake_pins()
+            self.timer.process()
             self.process_usb_sense()
             self.process_tap_events()
-            time.sleep_ms(5)
+            self.idle()
 
     def runLSM(self):
         print("LSM6DSL running")
         self.lsm6dsl.init()
         self.lp.stop_cmd()  # Ensure LEDs are off before starting
         while True:
+            self.poll_wake_pins()
             self.timer.process()
             self.process_usb_sense()
             self.process_tap_events()
@@ -348,7 +410,7 @@ class CubeController:
 
             # print("AX=%0.1f AY=%0.1f AZ=%0.1f | GX=%0.1f GY=%0.1f GZ=%0.1f" %
             #     (ax, ay, az, gx, gy, gz))
-            time.sleep_ms(200)
+            self.idle()
 
 def main():
     controller = CubeController()
