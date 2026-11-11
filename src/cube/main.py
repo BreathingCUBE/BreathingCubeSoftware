@@ -16,6 +16,7 @@ from drivers.piezoElectric import PiezoButton
 from drivers.pomodoroTimer import PomodoroTimer
 from drivers.alarm import Alarm
 from drivers.networkingNode import NetworkingNode  # adjust import to your actual path/name
+from drivers.networkWorker import NetworkWorker
 from drivers.batteryMeasurement import BatteryMeasurement 
 from drivers.lsm6dsl import LSM6DSL
 from drivers.dataTransfer import DeviceSettings 
@@ -51,6 +52,10 @@ WIFI_OFF_ON_BATTERY = True
 # long. Sending blocks for seconds, and taps during a send cannot be timed, so
 # this keeps the network out of the way of double taps.
 NETWORK_QUIET_MS = 1000
+# How to read the last two digits of an 8-digit task_color like "#ffaa00ff":
+#   "RGBA" - opacity, as web colour pickers send it; the white LED stays off.
+#   "RGBW" - white LED level.
+SERVER_COLOR_FORMAT = "RGBA"
 
 class CubeController:
     def __init__(self):
@@ -101,6 +106,10 @@ class CubeController:
             secrets.SERVER_IP,
             secrets.SERVER_PORT,
         )
+        # Background thread that does all WiFi/HTTP work.
+        self.net_worker = (NetworkWorker(self.network_inst, WIFI_CONNECT_TIMEOUT_S)
+                           if NETWORK_ENABLED else None)
+        self.sync_in_progress = False
 
         # THE DIFFERENT MODES ARE PAUSE and RUNNING
         self.task = self.cubeData.task
@@ -232,8 +241,8 @@ class CubeController:
             return False
         if self.usb_power_present:
             return False  # Keep the USB serial port alive for mpremote.
-        if self.network_inst.wlan.active():
-            return False  # Light sleep would drop the WiFi connection.
+        if self.network_busy():
+            return False  # Light sleep would freeze the send and drop WiFi.
         if time.ticks_diff(time.ticks_ms(), self.boot_ms) < BOOT_GRACE_MS:
             return False
         return True
@@ -305,72 +314,76 @@ class CubeController:
     def on_reminder(self):
         print("Reminder!")
 
-    # Takes in the JSON payload cube settings, these settings are then applied onto the cube .
-    # The way we should apply it is. We should most def be uploading that data onto the cube JSON file
+    def parse_server_color(self, color):
+        """Turn the server's task_color into [R, G, B, W] for the LEDs.
+
+        Accepts #RRGGBB or #RRGGBBXX. What XX means is set by
+        SERVER_COLOR_FORMAT: "RGBA" treats it as opacity (white LED off),
+        "RGBW" uses it as the white LED level.
+        """
+        if not isinstance(color, str) or not color.startswith("#") or len(color) not in (7, 9):
+            raise ValueError("task_color must be #RRGGBB or #RRGGBBXX, got %r" % (color,))
+        r = int(color[1:3], 16)
+        g = int(color[3:5], 16)
+        b = int(color[5:7], 16)
+        if len(color) == 9 and SERVER_COLOR_FORMAT == "RGBW":
+            w = int(color[7:9], 16)
+        else:
+            w = 0
+        return [r, g, b, w]
+
+    # Takes the JSON reply from a reset/double tap, applies each valid setting
+    # to the cube, and saves them to settings.json so they survive a reboot.
     def upload_configSettings(self, payload):
         if not isinstance(payload, dict):
             print("Config reply is not a JSON object:", payload)
             return False
 
-        errors = []
+        print("Applying server settings from:", payload)
+        applied = []
 
         # --- task_name ---
-        if not isinstance(payload.get("task_name"), str) or not payload.get("task_name"):
-            errors.append("task_name must be a non-empty string")
+        task_name = payload.get("task_name")
+        if isinstance(task_name, str) and task_name.strip():
+            self.task = task_name.strip()
+            applied.append("task")
+        elif "task_name" in payload:
+            print("- Ignored task_name (must be a non-empty string):", task_name)
 
         # --- task_color ---
-        color = payload.get("task_color")
-
-        if not isinstance(color, str):
-            errors.append("task_color must be a string")
-
-        elif not (color.startswith("#") and len(color) == 9):
-            errors.append("task_color must be format #RRGGBBWW")
-
-        else:
-            hex_part = color[1:]
+        if "task_color" in payload:
             try:
-                int(hex_part, 16)  # validate hex
-            except ValueError:
-                errors.append("task_color must contain valid hex values")
+                self.RGBW = self.lp.normalize_rgbw(self.parse_server_color(payload["task_color"]))
+                applied.append("RGBW")
+            except (ValueError, TypeError) as e:
+                print("- Ignored task_color:", e)
 
-        # --- task_time ---
-        if not isinstance(payload.get("task_time"), int) or payload.get("task_time") <= 0:
-            errors.append("task_time must be a positive integer")
+        # --- task_time (seconds) ---
+        task_time = payload.get("task_time")
+        if isinstance(task_time, int) and task_time > 0:
+            self.stopWatchPresetTime = task_time  # Used on the next start.
+            applied.append("stopWatchPresetTime")
+        elif "task_time" in payload:
+            print("- Ignored task_time (must be a positive integer):", task_time)
 
-        # IF ERRORS → STOP
-        if errors:
-            print("Validation errors:")
-            for err in errors:
-                print("-", err)
+        if not applied:
+            print("No valid settings in server reply; nothing changed")
             return False
 
-        # APPLY SETTINGS
-        print("Configuration valid, applying settings...")
+        # Save to settings.json so the settings survive a reboot or offline use.
         try:
-            self.RGBW = self.lp.hex_to_rgbw(color)
-            self.stopWatchPresetTime = (int(payload["task_time"]))
-
-            self.task = payload["task_name"].strip()
-            # self.animation_pattern = pattern
-            # self.alarm.alarmType = payload["alarm_type"].strip().lower()
-
-            self.cubeData.update_from_json(json.dumps({
-                "task": self.task,
-                "mode": self.mode,
-                "stopWatchPresetTime": self.stopWatchPresetTime,
-                "RGBW": self.RGBW,
-                "animation_pattern": self.animation_pattern,
-                "alarm_type": self.alarm_type
-            }))
-            # Save so the server's settings survive a reboot or offline use.
+            self.cubeData.task = self.task
+            self.cubeData.stopWatchPresetTime = self.stopWatchPresetTime
+            self.cubeData.RGBW = list(self.RGBW)
             self.cubeData.save_to_file(self.cubeData.to_dict())
-
-            return True
         except Exception as e:
-            print("Apply error:", e)
-            return False
-        
+            print("Settings applied but could not be saved:", e)
+
+        print("Applied:", ", ".join(applied))
+        print("  task =", self.task)
+        print("  RGBW [R, G, B, W] =", self.RGBW)
+        print("  stopWatchPresetTime =", self.stopWatchPresetTime, "s")
+        return True
 
     def init_lp5814(self) -> bool:
         if not self.lp.ping():
@@ -387,25 +400,23 @@ class CubeController:
         return True
 
     # ---------- Networking ----------
-    def wifi_connect(self):
-        """Connect to WiFi if needed. Returns True when connected."""
-        if not NETWORK_ENABLED:
-            return False
-        try:
-            self.network_inst.connect_wifi(timeout=WIFI_CONNECT_TIMEOUT_S)
-            return True
-        except Exception as e:
-            print("Failed to connect to WiFi:", e)
-            return False
+    # All WiFi and HTTP work runs in self.net_worker's background thread, so
+    # nothing here blocks the main loop. Replies come back through
+    # process_network_results(), which runs on the main thread and is the
+    # only place that reacts to them with LEDs or settings.
+
+    def wifi_off_after_send(self):
+        """On battery, turn WiFi off after each send so light sleep can resume."""
+        return WIFI_OFF_ON_BATTERY and not self.usb_power_present
 
     def wifi_release(self):
-        """On battery, power WiFi down after a request so light sleep can resume."""
-        if WIFI_OFF_ON_BATTERY and not self.usb_power_present:
-            self.network_inst.disconnect_wifi()
+        """On battery, power WiFi down (done by the worker thread)."""
+        if self.net_worker and self.wifi_off_after_send():
+            self.net_worker.wifi_off()
 
     def queue_report(self, action, elapsed_seconds, sync=False):
-        """Queue a server report; process_network() sends it later."""
-        if NETWORK_ENABLED:
+        """Queue a server report; process_network() hands it to the worker."""
+        if self.net_worker:
             self.pending_reports.append((action, int(elapsed_seconds), sync))
 
     def ms_until_network_due(self):
@@ -413,11 +424,11 @@ class CubeController:
         return NETWORK_QUIET_MS - time.ticks_diff(time.ticks_ms(), self.last_tap_ms)
 
     def process_network(self):
-        """Send queued reports, but only once tapping has stopped.
+        """Hand queued reports to the worker once tapping has stopped.
 
-        Sending blocks for seconds. Waiting until no tap is pending or being
-        timed, and none has happened for NETWORK_QUIET_MS, keeps double taps
-        reliable.
+        Sending no longer blocks the loop, but the HTTPS handshake still uses
+        a lot of CPU. Starting it only after the double-tap window keeps tap
+        timing accurate.
         """
         if not self.pending_reports:
             return
@@ -429,67 +440,60 @@ class CubeController:
         while self.pending_reports:
             action, elapsed_seconds, sync = self.pending_reports.pop(0)
             if sync:
-                self.sync_with_server(action, elapsed_seconds)
+                print("Syncing with server...")
+                self.lp.loading_animation()
+                self.sync_in_progress = True
+            self.net_worker.send(
+                {
+                    "task": self.task,
+                    "action": action,
+                    "elapsed_seconds": elapsed_seconds,
+                },
+                self.stopWatchPresetTime,
+                sync=sync,
+                wifi_off_after=self.wifi_off_after_send(),
+            )
+
+    def process_network_results(self):
+        """React to finished sends (main thread only: LEDs, settings)."""
+        if not self.net_worker:
+            return
+        for action, sync, reply in self.net_worker.take_results():
+            if reply is None:
+                print(action, "was not delivered; continuing offline")
             else:
-                self.report_session_event(action, elapsed_seconds)
-            # Stop if the user tapped during the send; finish once quiet again.
-            if self.lsm6dsl_int1.value():
-                break
+                print("RECEIVED", reply)
 
-    def report_session_event(self, action, elapsed_seconds):
-        """Send a start/stop/reset event to the server.
+            if not sync:
+                continue
 
-        Returns the server's JSON reply, or None if it could not be delivered.
-        Every call retries WiFi, so one failure never leaves the cube
-        permanently offline.
-        """
-        if not NETWORK_ENABLED:
-            return None
+            # Reset/boot sync: replace the loading animation with the result.
+            self.sync_in_progress = False
+            self.lp.stop_cmd()
+            if reply is not None:
+                self.upload_configSettings(reply)
+                self.controller_success_animation()
+            else:
+                self.controller_error_animation()
 
-        reply = None
-        if self.wifi_connect():
-            try:
-                reply = self.network_inst.send_command(
-                    {
-                        "task": self.task,
-                        "action": action,
-                        "elapsed_seconds": int(elapsed_seconds),
-                    },
-                    presetTime=self.stopWatchPresetTime,
-                )
-            except Exception as e:
-                print("Failed to send", action, ":", e)
-        self.wifi_release()
-
-        if reply is None:
-            print(action, "was not delivered; continuing offline")
-        else:
-            print("RECEIVED", reply)
-        return reply
-
-    def sync_with_server(self, action="reset", elapsed_seconds=0):
-        """Report an event, apply any settings the server sends back, and show
-        loading then success/fail on the LEDs."""
-        if not NETWORK_ENABLED:
+    def network_busy(self):
+        """True while reports are queued, sending, or WiFi is still on."""
+        if not self.net_worker:
             return False
-
-        print("Syncing with server...")
-        self.lp.loading_animation()
-        reply = self.report_session_event(action, elapsed_seconds)
-        self.lp.stop_cmd()
-
-        if reply is not None:
-            self.upload_configSettings(reply)
-            self.controller_success_animation()
-            return True
-
-        self.controller_error_animation()
-        return False
+        return (bool(self.pending_reports)
+                or not self.net_worker.idle()
+                or self.network_inst.wlan.active())
 
     def init_network(self):
-        """Connect at boot and pull the latest settings from the server."""
+        """At boot, report in and pull the latest settings from the server.
+
+        Runs in the background; the loading animation shows until the reply
+        arrives, then green (success) or red (failed).
+        """
         # elapsed_seconds=1 matches what the old code sent at boot.
-        return self.sync_with_server("reset", 1)
+        self.queue_report("reset", 1, sync=True)
+        self.last_tap_ms = time.ticks_add(time.ticks_ms(), -NETWORK_QUIET_MS)  # Send now.
+        self.process_network()
 
     def toggle_mode(self):
         if self.mode == MODE_STOP:
@@ -513,6 +517,7 @@ class CubeController:
             self.process_usb_sense()
             self.process_tap_events()
             self.process_network()
+            self.process_network_results()
             self.idle()
 
     def runLSM(self):
