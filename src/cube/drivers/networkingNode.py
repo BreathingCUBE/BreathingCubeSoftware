@@ -40,15 +40,27 @@ class NetworkingNode:
             print("Connecting to WiFi...")
             self.wlan.connect(self.ssid, self.password)
 
-            start_time = time.time()
+            start_ms = time.ticks_ms()
             while not self.wlan.isconnected():
-                if time.time() - start_time > timeout:
-                    raise RuntimeError("WiFi connection timeout")
+                if time.ticks_diff(time.ticks_ms(), start_ms) > timeout * 1000:
                     self.connected = False
-                time.sleep(1)
+                    raise RuntimeError("WiFi connection timeout")
+                time.sleep_ms(100)
 
         print("WiFi connected:", self.wlan.ifconfig())
         self.connected = True
+
+    def disconnect_wifi(self):
+        """Power the radio down. WiFi draws far more than the rest of the cube,
+        and light sleep cannot keep a connection alive anyway."""
+        if self.wlan.active():
+            try:
+                self.wlan.disconnect()
+            except OSError:
+                pass
+            self.wlan.active(False)
+            print("WiFi off")
+        self.connected = False
 
 
     def ensure_connection(self):
@@ -114,8 +126,11 @@ class NetworkingNode:
     # '''
 
 
-    def send_command(self, command, presetTime=0, task="Meditation"):
-        self.ensure_connection()
+    def send_command(self, command, presetTime=0, task="Meditation", timeout=10):
+        """POST a start/stop/reset event. Returns the server's JSON reply, or
+        None if WiFi is down, the request fails, or the server returns an error."""
+        if not self.ensure_connection():
+            return None
 
         # url = f"http://{self.server_ip}:{self.port}/api/task/control"
 
@@ -133,16 +148,24 @@ class NetworkingNode:
 
         try:
             print(" JSON PAYLOAD X2:", payload)
-            response = urequests.post(url, json=payload, headers = self.headers)
+            # timeout stops a slow server (e.g. Render waking up) from
+            # freezing the cube indefinitely.
+            response = urequests.post(url, json=payload, headers=self.headers,
+                                      timeout=timeout)
 
-            print("Status code:", response.status_code)
+            status = response.status_code
+            print("Status code:", status)
             try:
                 data = response.json()
-            except:
+            except Exception:
                 print("Invalid JSON response")
                 data = None
 
             response.close()
+
+            if not 200 <= status < 300:
+                print("Server error response:", data)
+                return None
             return data   # return actual response (NOT True)
 
         except Exception as e:
