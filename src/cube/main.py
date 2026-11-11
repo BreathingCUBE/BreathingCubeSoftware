@@ -4,6 +4,7 @@
 # one button, one led, one timer, and a dream
 
 import time
+import esp32
 from machine import ADC, I2C, Pin, PWM, lightsleep
 from time import sleep_ms
 import secrets  # secrets.WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT
@@ -34,7 +35,10 @@ DOUBLE_TAP_WINDOW_MS = 400
 # awake, because light sleep shuts off the ESP32-C3's USB serial port and
 # mpremote/push.ps1 can no longer connect.
 LOW_POWER_ENABLED = True
-IDLE_SLEEP_MS = 100       # Longest single light sleep; also the tap/USB polling interval.
+# Taps wake the chip immediately through a GPIO wake on IMU INT1, so this only
+# limits how long a USB plug-in can go unnoticed.
+IDLE_SLEEP_MS = 1000      # Longest single light sleep.
+USB_DEBOUNCE_MS = 20      # The USB sense pin must hold a new level this long to count.
 BOOT_GRACE_MS = 5000      # Stay awake this long after boot so the board can always be reached.
 
 class CubeController:
@@ -78,12 +82,12 @@ class CubeController:
         # print("Port:", secrets.SERVER_PORT)
 
         # Networking
-        # self.network_inst = NetworkingNode(
-        #     secrets.WIFI_SSID,
-        #     secrets.WIFI_PASSWORD,
-        #     secrets.SERVER_IP,
-        #     secrets.SERVER_PORT,
-        # )
+        self.network_inst = NetworkingNode(
+            secrets.WIFI_SSID,
+            secrets.WIFI_PASSWORD,
+            secrets.SERVER_IP,
+            secrets.SERVER_PORT,
+        )
 
         # THE DIFFERENT MODES ARE PAUSE and RUNNING
         # self.task = self.cubeData.task
@@ -92,15 +96,12 @@ class CubeController:
         self.RGBW = self.lp.normalize_rgbw(self.cubeData.RGBW)
         self.animation_pattern = self.cubeData.animation_pattern
         print("Loaded RGBW [R, G, B, W]:", self.RGBW)
+        # IMU INT1 is latched high until TAP_SRC is read. It has no edge IRQ:
+        # poll_wake_pins() reads its level every loop pass, and
+        # esp32.wake_on_gpio() wakes the chip from light sleep when it goes
+        # high. (A GPIO wake sets the pin's interrupt type to level-high, so an
+        # IRQ handler on this pin would fire nonstop while INT1 stays latched.)
         self.lsm6dsl_int1 = Pin(4, Pin.IN)
-        self.lsm6dsl_int1.irq(
-            trigger=Pin.IRQ_RISING,
-            handler=self.on_lsm6dsl_int1
-        )
-
-    def on_lsm6dsl_int1(self, pin):
-        # IRQ callbacks should only set a flag; do not print or use I2C here.
-        self.lsm6dsl_irq_pending = True
 
     def on_usb_sense_irq(self, pin):
         # self.lp.connected_animation()
@@ -112,13 +113,19 @@ class CubeController:
             return
 
         self.usb_irq_pending = False
+
+        # Ignore glitches: only act if the pin still shows the new level
+        # after a short wait.
         present = self.isUsb.value() == 0
-        self.lp.connected_animation()
-        if present != self.usb_power_present:
-            self.usb_power_present = present
-            print("USB VBUS connected" if present else "USB VBUS disconnected")
-            self.lp.connected_animation() if present else self.lp.fail_animation()
-            sleep_ms(500)
+        if present == self.usb_power_present:
+            return
+        sleep_ms(USB_DEBOUNCE_MS)
+        if (self.isUsb.value() == 0) != present:
+            return
+
+        self.usb_power_present = present
+        print("USB VBUS connected" if present else "USB VBUS disconnected")
+        self.lp.connected_animation() if present else self.lp.fail_animation()
             
     def handle_single_tap(self):
         """Apply the start/stop action after the tap window expires."""
@@ -190,9 +197,9 @@ class CubeController:
     def poll_wake_pins(self):
         """Catch IMU taps and USB plug changes by reading pin levels.
 
-        Edge IRQs do not fire while the chip is in light sleep, so after each
-        sleep the pins are checked directly. INT1 is latched by the IMU, so a
-        tap during sleep is still high here until TAP_SRC is read.
+        INT1 is latched by the IMU, so a tap stays visible here until TAP_SRC
+        is read. Edge IRQs do not fire during light sleep, so the USB sense
+        pin is also checked after every wake.
         """
         if self.lsm6dsl_int1.value():
             self.lsm6dsl_irq_pending = True
@@ -388,6 +395,8 @@ class CubeController:
         # self.init_network()
         self.lsm6dsl.init()
         self.lsm6dsl.gyro_deinit()  # Gyro is unused; taps only need the accelerometer.
+        # Wake from light sleep as soon as the IMU raises INT1 for a tap.
+        esp32.wake_on_gpio(pins=(self.lsm6dsl_int1,), level=True)
         self.lp.stop_cmd()  # Ensure LEDs are off before starting
         while True:
             self.poll_wake_pins()

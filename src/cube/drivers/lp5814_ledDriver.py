@@ -137,8 +137,8 @@ class LP5814:
         self.continue_cmd()
         self.write_reg(DEV_CONFIG1_REGISTER, 0)  # Blank while configuring.
         self.update_cmd()
-        self.write_reg(DEV_CONFIG0_REGISTER, 0)  # 25.5 mA full-scale DC.
-        self.write_reg(DEV_CONFIG2_REGISTER, 0)  # No hardware manual fade.
+        self.write_reg(DEV_CONFIG0_REGISTER, 1)  #0 - 25.5 mA full-scale DC.
+        self.write_reg(DEV_CONFIG2_REGISTER, 0xFF)  # No hardware manual fade.
         self.write_reg(DEV_CONFIG3_REGISTER,0xFF) #exponential for everything
         self.write_reg(DEV_CONFIG4_REGISTER, 0xE4)  # OUTn -> ENGINEn.
         for channel in range(4):
