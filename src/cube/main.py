@@ -7,7 +7,7 @@ import time
 import esp32
 from machine import ADC, I2C, Pin, PWM, lightsleep
 from time import sleep_ms
-import secrets  # secrets.WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT
+# import secrets  # secrets.WIFI_SSID, WIFI_PASSWORD, SERVER_IP, SERVER_PORT
 import json
 
 from drivers.lp5814_ledDriver import LP5814
@@ -15,21 +15,22 @@ from drivers.lp5811_ledDriver import LP5811
 from drivers.piezoElectric import PiezoButton
 from drivers.pomodoroTimer import PomodoroTimer
 from drivers.alarm import Alarm
-from drivers.networkingNode import NetworkingNode  # adjust import to your actual path/name
-from drivers.networkWorker import NetworkWorker
+# from drivers.networkingNode import NetworkingNode  # adjust import to your actual path/name
+# from drivers.networkWorker import NetworkWorker
 from drivers.batteryMeasurement import BatteryMeasurement 
 from drivers.lsm6dsl import LSM6DSL
 from drivers.dataTransfer import DeviceSettings 
-import socket
+# import socket
 
-MODE_STOP   = 0
-MODE_RUNNING = 1
+MODE_RESET = "RESET"
+MODE_START = "START"
 MODE_CONFIG  = 2
 MODE_ERROR   = 3
 
 OFFLINE_RGBW = [0,0,255,0] # default white color, can be changed by server config
 OFFLINE_PATTERN = [0x0D, 0x0D, 0x0D, 0x0D] # 4 seconds per breathing stage
 DOUBLE_TAP_WINDOW_MS = 400
+TAP_FEEDBACK_MS = 700  # LP5814 timing codes [2, 3, 4, 5] total 700 ms.
 
 # ---- Low power ----
 # Light sleep only runs on battery. While USB power is present the chip stays
@@ -42,20 +43,21 @@ IDLE_SLEEP_MS = 1000      # Longest single light sleep.
 USB_DEBOUNCE_MS = 20      # The USB sense pin must hold a new level this long to count.
 BOOT_GRACE_MS = 5000      # Stay awake this long after boot so the board can always be reached.
 
-# ---- Networking ----
-NETWORK_ENABLED = True
-WIFI_CONNECT_TIMEOUT_S = 5
-# On battery, turn WiFi off after each request so the cube can light-sleep.
-# On USB, WiFi stays connected so taps report faster.
-WIFI_OFF_ON_BATTERY = True
-# Server reports are queued and only sent once no tap has happened for this
-# long. Sending blocks for seconds, and taps during a send cannot be timed, so
-# this keeps the network out of the way of double taps.
-NETWORK_QUIET_MS = 1000
+# # ---- Networking ----
+# NETWORK_ENABLED = True
+# WIFI_CONNECT_TIMEOUT_S = 5
+# # On battery, turn WiFi off after each request so the cube can light-sleep.
+# # On USB, WiFi stays connected so taps report faster.
+# WIFI_OFF_ON_BATTERY = True
+# # Server reports are queued and only sent once no tap has happened for this
+# # long. Sending blocks for seconds, and taps during a send cannot be timed, so
+# # this keeps the network out of the way of double taps.
+# NETWORK_QUIET_MS = 1000
 # How to read the last two digits of an 8-digit task_color like "#ffaa00ff":
 #   "RGBA" - opacity, as web colour pickers send it; the white LED stays off.
 #   "RGBW" - white LED level.
 SERVER_COLOR_FORMAT = "RGBA"
+LIGHTS_ENABLED = True
 
 class CubeController:
     def __init__(self):
@@ -72,7 +74,7 @@ class CubeController:
         self.tap_waiting_for_second = False
         self.first_tap_ms = 0
         self.last_tap_ms = time.ticks_ms()
-        self.pending_reports = []  # (action, elapsed_seconds, sync) waiting to send
+        # self.pending_reports = []  # (action, elapsed_seconds, sync) waiting to send
         self.init_lp5814()
         
         # Inputs
@@ -99,22 +101,22 @@ class CubeController:
         # print("Server IP:",  secrets.SERVER_IP)
         # print("Port:", secrets.SERVER_PORT)
 
-        # Networking
-        self.network_inst = NetworkingNode(
-            secrets.WIFI_SSID,
-            secrets.WIFI_PASSWORD,
-            secrets.SERVER_IP,
-            secrets.SERVER_PORT,
-        )
-        # Background thread that does all WiFi/HTTP work.
-        self.net_worker = (NetworkWorker(self.network_inst, WIFI_CONNECT_TIMEOUT_S)
-                           if NETWORK_ENABLED else None)
-        self.sync_in_progress = False
+        # # Networking
+        # self.network_inst = NetworkingNode(
+            # secrets.WIFI_SSID,
+            # secrets.WIFI_PASSWORD,
+            # secrets.SERVER_IP,
+            # secrets.SERVER_PORT,
+        # )
+        # # Background thread that does all WiFi/HTTP work.
+        # self.net_worker = (NetworkWorker(self.network_inst, WIFI_CONNECT_TIMEOUT_S)
+                           # if NETWORK_ENABLED else None)
+        # self.sync_in_progress = False
 
-        # THE DIFFERENT MODES ARE PAUSE and RUNNING
+        # The controller toggles between reset and start states.
         self.task = self.cubeData.task
         self.alarm_type = self.cubeData.alarm_type
-        self.mode = "STOP" # believe will need to get deleted
+        self.mode = MODE_RESET
         self.stopWatchPresetTime = self.cubeData.stopWatchPresetTime
         self.RGBW = self.lp.normalize_rgbw(self.cubeData.RGBW)
         self.animation_pattern = self.cubeData.animation_pattern
@@ -148,38 +150,9 @@ class CubeController:
 
         self.usb_power_present = present
         print("USB VBUS connected" if present else "USB VBUS disconnected")
-        self.lp.connected_animation() if present else self.lp.fail_animation()
-        if not present:
-            self.wifi_release()  # Now on battery: drop WiFi so light sleep can run.
+        # if not present:
+            # self.wifi_release()  # Now on battery: drop WiFi so light sleep can run.
             
-    def handle_single_tap(self):
-        """Apply the start/stop action after the tap window expires."""
-        print("Handling single tap")
-        # LEDs and timer change now; the server report is queued and sent by
-        # process_network() once tapping has stopped.
-        if self.mode == "RUNNING":
-            self.lp.stop_cmd()
-            self.timer.pause()
-            self.mode = "STOP"
-            print("Session stopped")
-            self.queue_report("stop", self.timer.session_elapsed_ms // 1000)
-
-        elif self.mode == "STOP":
-            print("Starting timer for", self.stopWatchPresetTime, "seconds")
-            self.timer.set_time(self.stopWatchPresetTime)
-            self.timer.start()
-            self.lp.init_auto()
-            # print("Starting breathing with RGBW [R, G, B, W]:", self.RGBW)
-            self.lp.led_all_breathing(
-                RGBW=self.RGBW,
-                duration_ms=self.animation_pattern
-            )
-            self.mode = "RUNNING"
-            self.lp.start_cmd()
-            self.queue_report("start", 0)
-        else:
-            print("Ignoring tap while mode is", self.mode)
-
     def process_tap_events(self):
         """Recognize a software double tap from two IMU single-tap events."""
         now = time.ticks_ms()
@@ -197,31 +170,22 @@ class CubeController:
 
                 if self.tap_waiting_for_second: #Boolean to check if we are waiting for a second tap
                     elapsed = time.ticks_diff(now, self.first_tap_ms)
-                    if elapsed <= DOUBLE_TAP_WINDOW_MS and self.mode == "STOP": # if we are within the double-tap window, handle the double tap
+                    if elapsed <= DOUBLE_TAP_WINDOW_MS:
                         self.tap_waiting_for_second = False
                         self.handle_double_tap()
                         return
 
-                    #blocks red light going on twice
-                    self.tap_waiting_for_second = False
-                    self.handle_single_tap()
-
-                # Give immediate feedback on the first tap while waiting to
-                # determine whether another tap follows within the window.
-                if self.mode == "RUNNING":
-                    self.lp.blink_animation([255, 0, 0, 0])
-                elif self.mode == "STOP":
-                    self.lp.blink_animation([0, 255, 0, 0])
+                # A single tap has no effect; only a second tap in the window
+                # can change the state.
                 self.tap_waiting_for_second = True
                 self.first_tap_ms = now
             else:
                 print("Interrupt was not identified as a single tap")
 
-        #Once second tap window has expired, handle the first tap as a single tap.
+        # Expired first taps are intentionally discarded.
         if (self.tap_waiting_for_second and
                 time.ticks_diff(now, self.first_tap_ms) >= DOUBLE_TAP_WINDOW_MS):
             self.tap_waiting_for_second = False
-            self.handle_single_tap()
 
     # ---------- Low power ----------
     def poll_wake_pins(self):
@@ -241,8 +205,8 @@ class CubeController:
             return False
         if self.usb_power_present:
             return False  # Keep the USB serial port alive for mpremote.
-        if self.network_busy():
-            return False  # Light sleep would freeze the send and drop WiFi.
+        # if self.network_busy():
+            # return False  # Light sleep would freeze the send and drop WiFi.
         if time.ticks_diff(time.ticks_ms(), self.boot_ms) < BOOT_GRACE_MS:
             return False
         return True
@@ -273,42 +237,57 @@ class CubeController:
                 return
             sleep_time = min(sleep_time, next_event)
 
-        # Do not sleep past the moment queued reports are due to send.
-        if self.pending_reports:
-            wait = self.ms_until_network_due()
-            if wait <= 0:
-                return
-            sleep_time = min(sleep_time, wait)
+        # # Do not sleep past the moment queued reports are due to send.
+        # if self.pending_reports:
+            # wait = self.ms_until_network_due()
+            # if wait <= 0:
+                # return
+            # sleep_time = min(sleep_time, wait)
 
         lightsleep(sleep_time)
 
     def handle_double_tap(self):
-        """Reset the session after two single-tap events within the time window."""
-        print("Double tap detected; resetting session")
-        elapsed_seconds = self.timer.session_elapsed_ms // 1000  # Before reset clears it.
-        self.lp.stop_cmd()
-        self.timer.reset()
-        self.timer.set_time(self.stopWatchPresetTime)
-        self.mode = "STOP"
-        self.lp.blink_animation([255, 255, 255, 255])
-
-        # Once tapping stops, report the reset and pull any new settings
-        # (colour, task, time), showing loading then success/fail on the LEDs.
-        self.queue_report("reset", elapsed_seconds, sync=True)
+        """Toggle between starting a session and resetting it."""
+        if self.mode == MODE_START:
+            print("Double tap detected; resetting session")
+            self.timer.reset()
+            self.timer.set_time(self.stopWatchPresetTime)
+            self.mode = MODE_RESET
+            if LIGHTS_ENABLED:
+                self.lp.blink_animation([255, 0, 0, 0])
+                sleep_ms(TAP_FEEDBACK_MS)
+                self.lp.shutdown()
+        else:
+            print("Double tap detected; starting session")
+            self.mode = MODE_START
+            if LIGHTS_ENABLED:
+                self.lp.blink_animation([0, 255, 0, 0])
+                sleep_ms(TAP_FEEDBACK_MS)
+                self.lp.init_auto(exponential=False)
+                self.lp.led_all_breathing(
+                    RGBW=self.RGBW,
+                    duration_ms=self.animation_pattern
+                )
+                self.lp.start_cmd()
+            self.timer.set_time(self.stopWatchPresetTime)
+            self.timer.start()
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
-        self.lp.success_animation()
+        if LIGHTS_ENABLED:
+            self.lp.success_animation()
 
     def controller_error_animation(self):
         print("Error mode: flashing red")
-        self.lp.fail_animation()
+        if LIGHTS_ENABLED:
+            self.lp.fail_animation()
         
     # ---------- Callbacks ----------
     def on_session_complete(self):
         print("Timer finished")
         self.alarm.bell()
-        self.lp.stop_cmd()
+        if LIGHTS_ENABLED:
+            self.lp.stop_cmd()
         self.timer.pause()
         
     def on_reminder(self):
@@ -399,131 +378,137 @@ class CubeController:
         print("LP5811 detected (ACK)")
         return True
 
-    # ---------- Networking ----------
-    # All WiFi and HTTP work runs in self.net_worker's background thread, so
-    # nothing here blocks the main loop. Replies come back through
-    # process_network_results(), which runs on the main thread and is the
-    # only place that reacts to them with LEDs or settings.
+    # # ---------- Networking ----------
+    # # All WiFi and HTTP work runs in self.net_worker's background thread, so
+    # # nothing here blocks the main loop. Replies come back through
+    # # process_network_results(), which runs on the main thread and is the
+    # # only place that reacts to them with LEDs or settings.
 
-    def wifi_off_after_send(self):
-        """On battery, turn WiFi off after each send so light sleep can resume."""
-        return WIFI_OFF_ON_BATTERY and not self.usb_power_present
+    # def wifi_off_after_send(self):
+        # """On battery, turn WiFi off after each send so light sleep can resume."""
+        # return WIFI_OFF_ON_BATTERY and not self.usb_power_present
 
-    def wifi_release(self):
-        """On battery, power WiFi down (done by the worker thread)."""
-        if self.net_worker and self.wifi_off_after_send():
-            self.net_worker.wifi_off()
+    # def wifi_release(self):
+        # """On battery, power WiFi down (done by the worker thread)."""
+        # if self.net_worker and self.wifi_off_after_send():
+            # self.net_worker.wifi_off()
 
-    def queue_report(self, action, elapsed_seconds, sync=False):
-        """Queue a server report; process_network() hands it to the worker."""
-        if self.net_worker:
-            self.pending_reports.append((action, int(elapsed_seconds), sync))
+    # def queue_report(self, action, elapsed_seconds, sync=False):
+        # """Queue a server report; process_network() hands it to the worker."""
+        # if self.net_worker:
+            # self.pending_reports.append((action, int(elapsed_seconds), sync))
 
-    def ms_until_network_due(self):
-        """Milliseconds until taps have been quiet for NETWORK_QUIET_MS."""
-        return NETWORK_QUIET_MS - time.ticks_diff(time.ticks_ms(), self.last_tap_ms)
+    # def ms_until_network_due(self):
+        # """Milliseconds until taps have been quiet for NETWORK_QUIET_MS."""
+        # return NETWORK_QUIET_MS - time.ticks_diff(time.ticks_ms(), self.last_tap_ms)
 
-    def process_network(self):
-        """Hand queued reports to the worker once tapping has stopped.
+    # def process_network(self):
+        # """Hand queued reports to the worker once tapping has stopped.
 
-        Sending no longer blocks the loop, but the HTTPS handshake still uses
-        a lot of CPU. Starting it only after the double-tap window keeps tap
-        timing accurate.
-        """
-        if not self.pending_reports:
-            return
-        if self.tap_waiting_for_second or self.lsm6dsl_irq_pending:
-            return
-        if self.ms_until_network_due() > 0:
-            return
+        # Sending no longer blocks the loop, but the HTTPS handshake still uses
+        # a lot of CPU. Starting it only after the double-tap window keeps tap
+        # timing accurate.
+        # """
+        # if not self.pending_reports:
+            # return
+        # if self.tap_waiting_for_second or self.lsm6dsl_irq_pending:
+            # return
+        # if self.ms_until_network_due() > 0:
+            # return
 
-        while self.pending_reports:
-            action, elapsed_seconds, sync = self.pending_reports.pop(0)
-            if sync:
-                print("Syncing with server...")
-                self.lp.loading_animation()
-                self.sync_in_progress = True
-            self.net_worker.send(
-                {
-                    "task": self.task,
-                    "action": action,
-                    "elapsed_seconds": elapsed_seconds,
-                },
-                self.stopWatchPresetTime,
-                sync=sync,
-                wifi_off_after=self.wifi_off_after_send(),
-            )
+        # while self.pending_reports:
+            # action, elapsed_seconds, sync = self.pending_reports.pop(0)
+            # if sync:
+                # print("Syncing with server...")
+                # self.lp.loading_animation()
+                # self.sync_in_progress = True
+            # self.net_worker.send(
+                # {
+                    # "task": self.task,
+                    # "action": action,
+                    # "elapsed_seconds": elapsed_seconds,
+                # },
+                # self.stopWatchPresetTime,
+                # sync=sync,
+                # wifi_off_after=self.wifi_off_after_send(),
+            # )
 
-    def process_network_results(self):
-        """React to finished sends (main thread only: LEDs, settings)."""
-        if not self.net_worker:
-            return
-        for action, sync, reply in self.net_worker.take_results():
-            if reply is None:
-                print(action, "was not delivered; continuing offline")
-            else:
-                print("RECEIVED", reply)
+    # def process_network_results(self):
+        # """React to finished sends (main thread only: LEDs, settings)."""
+        # if not self.net_worker:
+            # return
+        # for action, sync, reply in self.net_worker.take_results():
+            # if reply is None:
+                # print(action, "was not delivered; continuing offline")
+            # else:
+                # print("RECEIVED", reply)
 
-            if not sync:
-                continue
+            # if not sync:
+                # continue
 
-            # Reset/boot sync: replace the loading animation with the result.
-            self.sync_in_progress = False
-            self.lp.stop_cmd()
-            if reply is not None:
-                self.upload_configSettings(reply)
-                self.controller_success_animation()
-            else:
-                self.controller_error_animation()
+            # # Reset/boot sync: replace the loading animation with the result.
+            # self.sync_in_progress = False
+            # self.lp.stop_cmd()
+            # if reply is not None:
+                # self.upload_configSettings(reply)
+                # self.controller_success_animation()
+            # else:
+                # self.controller_error_animation()
 
-    def network_busy(self):
-        """True while reports are queued, sending, or WiFi is still on."""
-        if not self.net_worker:
-            return False
-        return (bool(self.pending_reports)
-                or not self.net_worker.idle()
-                or self.network_inst.wlan.active())
+    # def network_busy(self):
+        # """True while reports are queued, sending, or WiFi is still on."""
+        # if not self.net_worker:
+            # return False
+        # return (bool(self.pending_reports)
+                # or not self.net_worker.idle()
+                # or self.network_inst.wlan.active())
 
-    def init_network(self):
-        """At boot, report in and pull the latest settings from the server.
+    # def init_network(self):
+        # """At boot, report in and pull the latest settings from the server.
 
-        Runs in the background; the loading animation shows until the reply
-        arrives, then green (success) or red (failed).
-        """
-        # elapsed_seconds=1 matches what the old code sent at boot.
-        self.queue_report("reset", 1, sync=True)
-        self.last_tap_ms = time.ticks_add(time.ticks_ms(), -NETWORK_QUIET_MS)  # Send now.
-        self.process_network()
+        # Runs in the background; the loading animation shows until the reply
+        # arrives, then green (success) or red (failed).
+        # """
+        # # elapsed_seconds=1 matches what the old code sent at boot.
+        # self.queue_report("reset", 1, sync=True)
+        # self.last_tap_ms = time.ticks_add(time.ticks_ms(), -NETWORK_QUIET_MS)  # Send now.
+        # self.process_network()
 
     def toggle_mode(self):
-        if self.mode == MODE_STOP:
-            self.mode = MODE_RUNNING
+        if self.mode == MODE_RESET:
+            self.mode = MODE_START
         else:
-            self.mode = MODE_STOP
+            self.mode = MODE_RESET
 
     # ---------- Main loop ----------
     def run(self):
         print("main.py running")
-        self.lp.stop_cmd()  # Ensure LEDs are off before starting
+        if LIGHTS_ENABLED:
+            self.lp.stop_cmd()
+        else:
+            self.lp.init_auto(exponential=False)  # Initialize at zero brightness.
         self.lsm6dsl.init()
         self.lsm6dsl.gyro_deinit()  # Gyro is unused; taps only need the accelerometer.
         # Wake from light sleep as soon as the IMU raises INT1 for a tap.
         esp32.wake_on_gpio(pins=(self.lsm6dsl_int1,), level=True)
-        # Last, so its success/fail animation is left to finish playing.
-        self.init_network()
+        # # Last, so its success/fail animation is left to finish playing.
+        # self.init_network()
         while True:
             self.poll_wake_pins()
             self.timer.process()
             self.process_usb_sense()
             self.process_tap_events()
-            self.process_network()
-            self.process_network_results()
+            # self.process_network()
+            # self.process_network_results()
             self.idle()
 
     def runLSM(self):
         print("LSM6DSL running")
         self.lsm6dsl.init()
-        self.lp.stop_cmd()  # Ensure LEDs are off before starting
+        if LIGHTS_ENABLED:
+            self.lp.stop_cmd()
+        else:
+            self.lp.init_auto(exponential=False)  # Initialize at zero brightness.
         while True:
             self.poll_wake_pins()
             self.timer.process()

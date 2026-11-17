@@ -117,6 +117,11 @@ class LP5814:
                 raise RuntimeError('LP5814 engine did not stop')
             time.sleep_ms(1)
 
+    def shutdown(self):
+        """Stop animations and disable the LED driver until it is initialized again."""
+        self.stop_cmd()
+        self.write_reg(CHIP_ENABLE_REGISTER, CHIP_DISABLE)
+
     def pause_cmd(self):
         self.write_reg(PAUSE_CONTINUE_REG, 1)
 
@@ -139,7 +144,10 @@ class LP5814:
         self.update_cmd()
         self.write_reg(DEV_CONFIG0_REGISTER, 1)  #0 - 25.5 mA full-scale DC.
         self.write_reg(DEV_CONFIG2_REGISTER, 0xFF)  # No hardware manual fade.
-        self.write_reg(DEV_CONFIG3_REGISTER,0xFF) #exponential for everything
+        if exponential:
+            self.write_reg(DEV_CONFIG3_REGISTER, 0xFF)  # Exponential for everything.
+        else:
+            self.write_reg(DEV_CONFIG3_REGISTER, 0x0F)  # Linear for everything.
         self.write_reg(DEV_CONFIG4_REGISTER, 0xE4)  # OUTn -> ENGINEn.
         for channel in range(4):
             self.write_reg(MANUAL_DC_START + channel, peak_current)
@@ -310,7 +318,6 @@ class LP5814:
         self.led_all_breathing(color, [2, 3, 4, 5], 1)
         self.start_cmd()
 
-
     def fail_animation(self):
         self.init_auto()
         self.led_all_breathing([255, 0, 0, 0], [2, 3, 4, 5], 1)
@@ -325,7 +332,6 @@ class LP5814:
         self.init_auto()
         self.led_all_breathing([126, 0, 0, 0], [15, 15, 15, 15], 15)
         self.start_cmd()
-
 
 # Compatibility for existing imports after replacing your old module's contents.
 # Old explicit 5-bit chip_addr arguments must be removed or changed to 0x2C.
