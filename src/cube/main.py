@@ -29,8 +29,9 @@ MODE_ERROR   = 3
 
 OFFLINE_RGBW = [0,0,255,0] # default white color, can be changed by server config
 OFFLINE_PATTERN = [0x0D, 0x0D, 0x0D, 0x0D] # 4 seconds per breathing stage
-DOUBLE_TAP_WINDOW_MS = 400
+DOUBLE_TAP_WINDOW_MS = 700
 TAP_FEEDBACK_MS = 700  # LP5814 timing codes [2, 3, 4, 5] total 700 ms.
+TAP_FEEDBACK_BRIGHTNESS = 150
 
 # ---- Low power ----
 # Light sleep only runs on battery. While USB power is present the chip stays
@@ -179,6 +180,11 @@ class CubeController:
                 # can change the state.
                 self.tap_waiting_for_second = True
                 self.first_tap_ms = now
+                if LIGHTS_ENABLED:
+                    if self.mode == MODE_START:
+                        self.lp.blink_animation([TAP_FEEDBACK_BRIGHTNESS, 0, 0, 0])
+                    else:
+                        self.lp.blink_animation([0, TAP_FEEDBACK_BRIGHTNESS, 0, 0])
             else:
                 print("Interrupt was not identified as a single tap")
 
@@ -186,6 +192,8 @@ class CubeController:
         if (self.tap_waiting_for_second and
                 time.ticks_diff(now, self.first_tap_ms) >= DOUBLE_TAP_WINDOW_MS):
             self.tap_waiting_for_second = False
+            if LIGHTS_ENABLED and self.mode == MODE_START:
+                self.start_breathing_lights()
 
     # ---------- Low power ----------
     def poll_wake_pins(self):
@@ -263,14 +271,17 @@ class CubeController:
             if LIGHTS_ENABLED:
                 self.lp.blink_animation([0, 255, 0, 0])
                 sleep_ms(TAP_FEEDBACK_MS)
-                self.lp.init_auto(exponential=False)
-                self.lp.led_all_breathing(
-                    RGBW=self.RGBW,
-                    duration_ms=self.animation_pattern
-                )
-                self.lp.start_cmd()
+                self.start_breathing_lights()
             self.timer.set_time(self.stopWatchPresetTime)
             self.timer.start()
+
+    def start_breathing_lights(self):
+        self.lp.init_auto(exponential=False)
+        self.lp.led_all_breathing(
+            RGBW=self.RGBW,
+            duration_ms=self.animation_pattern
+        )
+        self.lp.start_cmd()
 
     def controller_success_animation(self):
         print("Success mode: flashing green")
