@@ -1,87 +1,71 @@
-'''
-
-The battery measurement class is in charge of measuring the BATTERY it does so by turning on a mosfet 
-
-PIN: IO0
-
-Then uses a ADC to measure the battery voltage through PIN: IO5. 
-
-The way that it measures the battery voltage is by turning on the mosfet.( Which should have its own class function)
-Then measuring the ADC( which should also have its own class function)
-
-Then another functio would call these 2. Turn on MOSFET FOR 500ms. Measure adc value: at 10 times at 50ms intervals. Then turn off the mosfet. 
-
-
-'''
+"""Read battery voltage through the board's resistor divider."""
 
 import time
 from machine import ADC, Pin
 
 
 class BatteryMeasurement:
+    ADC_MAX = 4095
+    ADC_FULL_SCALE_UV = 2_500_000  # Nominal 11 dB range; used for raw-count estimates.
+    DIVIDER_TOP_OHMS = 10_000
+    DIVIDER_BOTTOM_OHMS = 12_000
+
     def __init__(
         self,
-        mosfet_pin: int,          # IO0 controls MOSFET gate
-        adc_pin: int,             # IO5 reads battery voltage through voltage divider
-        samples: int,            # Number of ADC samples to average
-        sample_interval_ms: int, # Delay between each ADC sample
-        mosfet_settle_ms: int   # Time to wait after turning MOSFET on
+        adc_pin: int,
+        samples: int = 10,
+        sample_interval_ms: int = 50,
     ):
-        self.mosfet = Pin(mosfet_pin, Pin.OUT)
-        self.adc = ADC(Pin(adc_pin))
+        if samples <= 0:
+            raise ValueError("samples must be positive")
+        if sample_interval_ms < 0:
+            raise ValueError("sample_interval_ms must be non-negative")
 
+        self.adc = ADC(Pin(adc_pin))
+        self.adc.atten(ADC.ATTN_11DB)
+        self.adc.width(ADC.WIDTH_12BIT)
         self.samples = samples
         self.sample_interval_ms = sample_interval_ms
-        self.mosfet_settle_ms = mosfet_settle_ms
 
-        # Make sure MOSFET starts OFF
-        self.turn_mosfet_off()
+    @classmethod
+    def raw_to_battery_voltage(cls, raw: int) -> float:
+        """Estimate battery volts from a 12-bit ADC reading (nominal calibration)."""
+        if not isinstance(raw, int) or not 0 <= raw <= cls.ADC_MAX:
+            raise ValueError("raw ADC value must be an integer from 0 to 4095")
 
-    def turn_mosfet_on(self):
-        """
-        Turns ON the MOSFET so the battery voltage divider is connected.
-        """
-        self.mosfet.value(1)
-
-    def turn_mosfet_off(self):
-        """
-        Turns OFF the MOSFET to save battery power.
-        """
-        self.mosfet.value(0)
+        adc_voltage = raw * cls.ADC_FULL_SCALE_UV / cls.ADC_MAX
+        divider_ratio = (
+            cls.DIVIDER_TOP_OHMS + cls.DIVIDER_BOTTOM_OHMS
+        ) / cls.DIVIDER_BOTTOM_OHMS
+        return adc_voltage * divider_ratio / 1_000_000
 
     def read_adc(self) -> int:
-        """
-        Reads one raw ADC value.
-        """
+        """Read one raw 12-bit ADC value."""
         return self.adc.read()
 
     def read_adc_average(self) -> int:
-        """
-        Reads the ADC multiple times and returns the average raw ADC value.
-        """
+        """Return the average of several raw ADC readings."""
         total = 0
-
-        for _ in range(self.samples):
+        for sample in range(self.samples):
             total += self.read_adc()
-            time.sleep_ms(self.sample_interval_ms)
-
+            if sample + 1 < self.samples:
+                time.sleep_ms(self.sample_interval_ms)
         return total // self.samples
 
     def measure_battery_raw(self) -> int:
-        """
-        Full battery measurement sequence:
+        """Return the averaged raw ADC count."""
+        return self.read_adc_average()
 
-        1. Turn on MOSFET
-        2. Wait for voltage to settle
-        3. Take 10 ADC readings at 50 ms intervals
-        4. Turn off MOSFET
-        5. Return average ADC value
-        """
-        self.turn_mosfet_on()
-        time.sleep_ms(self.mosfet_settle_ms)
+    def measure(self) -> float:
+        """Return calibrated battery voltage in volts using ADC microvolt readings."""
+        total_uv = 0
+        for sample in range(self.samples):
+            total_uv += self.adc.read_uv()
+            if sample + 1 < self.samples:
+                time.sleep_ms(self.sample_interval_ms)
 
-        adc_average = self.read_adc_average()
-
-        self.turn_mosfet_off()
-
-        return adc_average
+        adc_voltage = total_uv / self.samples / 1_000_000
+        divider_ratio = (
+            self.DIVIDER_TOP_OHMS + self.DIVIDER_BOTTOM_OHMS
+        ) / self.DIVIDER_BOTTOM_OHMS
+        return adc_voltage * divider_ratio

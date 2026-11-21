@@ -24,6 +24,10 @@ class LSM6DSL:
     WAKE_UP_THS = 0x5B
     MD1_CFG = 0x5E
     TAP_SRC_SINGLE_TAP = 0x20
+    # X/Y/Z tap bits. Measured: INT1 and SINGLE_TAP are only an ~11 ms pulse
+    # (the LIR latch does not hold them), but the axis bit stays set until
+    # TAP_SRC is read, so it still shows a tap the pin pulse was missed for.
+    TAP_SRC_AXES = 0x07
     INT1_SINGLE_TAP = 0x40
 
     # Expected WHO_AM_I value for LSM6DSL
@@ -126,8 +130,9 @@ class LSM6DSL:
         self.write_reg(0x15, self.read_reg(0x15) & ~0x10)
 
         self.write_reg(self.CTRL1_XL, 0x60)  # 416 Hz, +/-2 g
-        # Tap interrupt enabled, Z axis only, latched (LIR). INT1 stays high
-        # until TAP_SRC is read, so a tap during light sleep is not missed.
+        # Tap interrupt enabled, Z axis only, LIR set. Measured: INT1 is
+        # still only an ~11 ms pulse per tap; the Z bit in TAP_SRC is what
+        # stays set until read (see TAP_SRC_AXES).
         self.write_reg(self.TAP_CFG, 0x83)
         self.write_reg(self.TAP_THS_6D, 0x09)  # Tap threshold
         self.write_reg(self.INT_DUR2, 0x06)  # Shock and quiet timing

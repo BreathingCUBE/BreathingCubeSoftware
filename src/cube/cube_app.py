@@ -24,6 +24,7 @@ from drivers.batteryMeasurement import BatteryMeasurement
 from drivers.lsm6dsl import LSM6DSL
 from drivers.dataTransfer import DeviceSettings
 from drivers.perfMonitor import PerfMonitor
+from drivers.lp5814_ledDriver import TIME_MS
 # import socket
 
 # ---- Wireless ----
@@ -107,7 +108,12 @@ NETWORK_QUIET_MS = 1000
 SERVER_COLOR_FORMAT = "RGBA"
 LIGHTS_ENABLED = True
 
-
+# ---- Sounds (drivers/alarm.py) ----
+SOUNDS_ENABLED = True         # Master switch for every sound below.
+# Session start: rising chirp. Session stop: falling chirp.
+SESSION_END_SOUND = "phrase"   # "phrase", "bowl", "bell" or "none"
+BREATH_CUES_ENABLED = False    # Soft tone on each inhale/exhale. Off by default.
+BREATH_CUE_MAX_LATE_MS = 300   # Skip a cue that is this late instead of playing it off-beat.
 
 class CubeController:
     def __init__(self):
@@ -119,11 +125,17 @@ class CubeController:
         # ---- Hardware ----
         # self.onboard_led = Pin(2, Pin.OUT)
         # I2C + LP5814      
+        self.batteryMeasurement = BatteryMeasurement(
+            adc_pin=1,
+            samples=10,
+            sample_interval_ms=50,
+        )
         self.i2c = I2C(0, scl=Pin(7), sda=Pin(6))
         self.lp = LP5814(self.i2c, chip_addr=0x2C)
         self.lsm6dsl = LSM6DSL(self.i2c)  # Initialize the LSM6DSL instance
         self.testNum = 0
         self.lsm6dsl_irq_pending = False
+        self.polled_tap_source = None  # TAP_SRC already read by poll_wake_pins().
         self.tap_waiting_for_second = False
         self.first_tap_ms = 0
         self.last_tap_ms = time.ticks_ms()
@@ -190,12 +202,25 @@ class CubeController:
         self.RGBW = self.lp.normalize_rgbw(self.cubeData.RGBW)
         self.animation_pattern = self.cubeData.animation_pattern
         print("Loaded RGBW [R, G, B, W]:", self.RGBW)
-        # IMU INT1 is latched high until TAP_SRC is read. It has no edge IRQ:
-        # poll_wake_pins() reads its level every loop pass, and
-        # esp32.wake_on_gpio() wakes the chip from light sleep when it goes
-        # high. (A GPIO wake sets the pin's interrupt type to level-high, so an
-        # IRQ handler on this pin would fire nonstop while INT1 stays latched.)
+        # IMU INT1 goes high for ~11 ms per tap (measured; not latched).
+        # It has no edge IRQ: poll_wake_pins() reads its level and TAP_SRC
+        # every loop pass, and esp32.wake_on_gpio() wakes the chip from light
+        # sleep when it goes high. (A GPIO wake sets the pin's interrupt type
+        # to level-high, so an IRQ handler on this pin would fire nonstop
+        # while INT1 is high.)
         self.lsm6dsl_int1 = Pin(4, Pin.IN)
+
+        print("Battery voltage:", self.batteryMeasurement.measure())  # Save power until a measurement is requested.
+        # self.alarm.bell();
+        # self.alarm.wooden_tick_tock()
+
+        self.next_breath_cue_ms = None
+        self.breath_cue_inhale = True
+
+        
+        self.alarm.wooden_clack(650)
+        self.alarm.wooden_clack(1000)
+        self.alarm.wooden_clack(1100)
 
     def disable_unused_radios(self):
         """Make sure only the selected wireless interface can be on."""
@@ -257,10 +282,17 @@ class CubeController:
         #if an interrupt occurs, then do the following.
         if self.lsm6dsl_irq_pending:
             self.lsm6dsl_irq_pending = False # reset interrupt so it can happen again
-            tap_source = self.lsm6dsl.read_tap_source()
+            if self.polled_tap_source is not None:
+                # poll_wake_pins() already read (and so cleared) TAP_SRC.
+                tap_source = self.polled_tap_source
+                self.polled_tap_source = None
+            else:
+                tap_source = self.lsm6dsl.read_tap_source()
             print("TAP_SRC = 0x%02X" % tap_source)
 
-            if tap_source & self.lsm6dsl.TAP_SRC_SINGLE_TAP:# bit mask for single tap
+            # SINGLE_TAP is only set during the ~11 ms INT1 pulse. A tap read
+            # after the pulse shows just its axis bit, which still counts.
+            if tap_source & (self.lsm6dsl.TAP_SRC_SINGLE_TAP | self.lsm6dsl.TAP_SRC_AXES):
                 self.last_tap_ms = now  # Holds off queued network sends.
                 self.testNum += 1
                 print("Single tap event:", self.testNum)
@@ -276,9 +308,12 @@ class CubeController:
                 # can change the state.
                 self.tap_waiting_for_second = True
                 self.first_tap_ms = now
+                # No sound here: the speaker's vibration stops the IMU from
+                # detecting the second tap. Sounds play only once the double
+                # tap is confirmed (start_session / reset_session).
                 if LIGHTS_ENABLED:
                     if self.mode == MODE_START:
-                        self.led_feedback([0, TAP_FEEDBACK_BRIGHTNESS, 0, 0])
+                        self.led_feedback([TAP_FEEDBACK_BRIGHTNESS // 2, 0, 0, 0])  # // keeps it a whole number.
                     else:
                         # self.led_feedback([value // 2 for value in CONFIGURED_RGBW])
                         self.led_feedback([value // 2 for value in self.RGBW])
@@ -297,14 +332,23 @@ class CubeController:
     def poll_wake_pins(self):
         """Catch IMU taps and USB plug changes by reading pin levels.
 
-        INT1 is latched by the IMU, so a tap stays visible here until TAP_SRC
-        is read. Edge IRQs do not fire during light sleep, so the USB sense
-        pin is also checked after every wake.
+        INT1 is only an ~11 ms pulse per tap (the IMU does not latch it), so
+        a loop pass that comes later than that misses the pin. With BLE on,
+        passes are 20-30 ms apart. The tap's axis bit in TAP_SRC does stay
+        set until read, so it is checked too (one short I2C read per pass).
+        Edge IRQs do not fire during light sleep, so the USB sense pin is
+        also checked after every wake.
         """
-        if self.lsm6dsl_int1.value():
-            if not self.lsm6dsl_irq_pending:
+        if not self.lsm6dsl_irq_pending:
+            if self.lsm6dsl_int1.value():
                 self.perf.tap_begin()
-            self.lsm6dsl_irq_pending = True
+                self.lsm6dsl_irq_pending = True
+            else:
+                src = self.lsm6dsl.read_tap_source()
+                if src & (self.lsm6dsl.TAP_SRC_SINGLE_TAP | self.lsm6dsl.TAP_SRC_AXES):
+                    self.perf.tap_begin()
+                    self.polled_tap_source = src  # The read cleared it; keep it.
+                    self.lsm6dsl_irq_pending = True
         if (self.isUsb.value() == 0) != self.usb_power_present:
             self.usb_irq_pending = True
 
@@ -359,6 +403,13 @@ class CubeController:
                 return 0
             sleep_time = min(sleep_time, wait)
 
+        # Do not sleep past the next breathing cue.
+        if self.next_breath_cue_ms is not None:
+            wait = time.ticks_diff(self.next_breath_cue_ms, time.ticks_ms())
+            if wait <= 0:
+                return 0
+            sleep_time = min(sleep_time, wait)
+
         return sleep_time
 
     def idle(self):
@@ -404,10 +455,15 @@ class CubeController:
     # Session changes shared by taps and remote commands (BLE).
     def start_session(self):
         self.mode = MODE_START
+        t = time.ticks_ms()
         if LIGHTS_ENABLED:
             self.led_feedback(self.RGBW)
-            sleep_ms(TAP_FEEDBACK_MS)
+        if SOUNDS_ENABLED:
+            self.alarm.chirp_up()  # Plays during the LED blink, not after it.
+        if LIGHTS_ENABLED:
+            sleep_ms(max(0, TAP_FEEDBACK_MS - time.ticks_diff(time.ticks_ms(), t)))
             self.start_breathing_lights()
+        self.start_breath_cues()
         self.timer.set_time(self.stopWatchPresetTime)
         self.timer.start()
         self.queue_report("start", 0)
@@ -418,9 +474,14 @@ class CubeController:
         self.timer.reset()
         self.timer.set_time(self.stopWatchPresetTime)
         self.mode = MODE_RESET
+        self.next_breath_cue_ms = None
+        t = time.ticks_ms()
         if LIGHTS_ENABLED:
             self.led_feedback([255, 0, 0, 0])
-            sleep_ms(TAP_FEEDBACK_MS)
+        if SOUNDS_ENABLED:
+            self.alarm.chirp_down()
+        if LIGHTS_ENABLED:
+            sleep_ms(max(0, TAP_FEEDBACK_MS - time.ticks_diff(time.ticks_ms(), t)))
             self.lp.shutdown()
         # Report the reset and pull any new settings (WIFI mode only).
         self.queue_report("reset", elapsed_seconds, sync=True)
@@ -456,7 +517,9 @@ class CubeController:
     # ---------- Callbacks ----------
     def on_session_complete(self):
         print("Timer finished")
-        self.alarm.bell()
+        self.next_breath_cue_ms = None
+        if SOUNDS_ENABLED:
+            self.play_session_end_sound()
         if LIGHTS_ENABLED:
             self.lp.stop_cmd()
         self.timer.pause()
@@ -464,6 +527,52 @@ class CubeController:
 
     def on_reminder(self):
         print("Reminder!")
+
+    # ---------- Sounds (drivers/alarm.py) ----------
+    def play_session_end_sound(self):
+        # A tap silences the sound. INT1 stays latched, so the tap is still
+        # handled normally afterwards.
+        tapped = lambda: self.lsm6dsl_int1.value()
+        if SESSION_END_SOUND == "phrase":
+            self.alarm.rising_phrase(stop_check=tapped)
+        elif SESSION_END_SOUND == "bowl":
+            self.alarm.singing_bowl(stop_check=tapped)
+        elif SESSION_END_SOUND == "bell":
+            self.alarm.bell()
+
+    def breath_stage_ms(self):
+        """Breathing stages in ms: rise (inhale), hold, fall (exhale), hold."""
+        return [TIME_MS[code] for code in self.animation_pattern]
+
+    def start_breath_cues(self):
+        """Start inhale/exhale cues in step with the breathing pattern.
+
+        The LED pattern starts with "rise" (inhale), so the first cue is now.
+        """
+        self.breath_cue_inhale = True
+        if SOUNDS_ENABLED and BREATH_CUES_ENABLED:
+            self.next_breath_cue_ms = time.ticks_ms()
+        else:
+            self.next_breath_cue_ms = None
+
+    def process_breath_cues(self):
+        if self.next_breath_cue_ms is None or self.mode != MODE_START:
+            return
+        if self.tap_waiting_for_second or self.lsm6dsl_irq_pending:
+            return  # Never delay a tap.
+        late = time.ticks_diff(time.ticks_ms(), self.next_breath_cue_ms)
+        if late < 0:
+            return
+        rise, hold_high, fall, hold_low = self.breath_stage_ms()
+        if late <= BREATH_CUE_MAX_LATE_MS:
+            if self.breath_cue_inhale:
+                self.alarm.inhale_cue()
+            else:
+                self.alarm.exhale_cue()
+        wait = rise + hold_high if self.breath_cue_inhale else fall + hold_low
+        self.breath_cue_inhale = not self.breath_cue_inhale
+        # Step from the planned time, not from now, so cues don't drift.
+        self.next_breath_cue_ms = time.ticks_add(self.next_breath_cue_ms, max(1, wait))
 
     def parse_server_color(self, color):
         """Turn the server's task_color into [R, G, B, W] for the LEDs.
@@ -773,6 +882,7 @@ class CubeController:
         self.timer.process()
         self.process_usb_sense()
         self.process_tap_events()
+        self.process_breath_cues()
         self.process_remote_commands()
         self.process_network()
         self.process_network_results()
